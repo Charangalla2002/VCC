@@ -103,8 +103,12 @@ def step_2_venv():
     if not VENV_PY.exists():
         die(f"expected interpreter at {VENV_PY} but it does not exist")
 
+    # Probe one package from each requirements file. aiohttp is the canary for
+    # detection: backend/requirements.txt happens to carry ultralytics, so
+    # probing that alone reports success while detection still cannot import
+    # its own dependencies.
     probe = subprocess.run(
-        [str(VENV_PY), "-c", "import uvicorn, ultralytics"],
+        [str(VENV_PY), "-c", "import uvicorn, ultralytics, aiohttp"],
         capture_output=True,
     )
     if probe.returncode == 0:
@@ -112,10 +116,17 @@ def step_2_venv():
         return
     say("  installing requirements (pulls torch + ultralytics, takes a few minutes) ...")
     run([str(VENV_PY), "-m", "pip", "install", "--upgrade", "pip"], what="pip upgrade")
-    run(
-        [str(VENV_PY), "-m", "pip", "install", "-r", str(ROOT / "backend" / "requirements.txt")],
-        what="dependency install",
-    )
+    # Both files, into the same venv: run_all.py launches the backend and
+    # start_detection.py with this one interpreter.
+    for component in ("backend", "detection"):
+        requirements = ROOT / component / "requirements.txt"
+        if not requirements.exists():
+            die(f"missing {component}/requirements.txt")
+        say(f"  installing {component}/requirements.txt ...")
+        run(
+            [str(VENV_PY), "-m", "pip", "install", "-r", str(requirements)],
+            what=f"{component} dependency install",
+        )
 
 
 def step_3_database():
