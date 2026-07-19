@@ -152,8 +152,8 @@ def test_both_direction_down_first():
 
     assert len(evs) == 1
     assert evs[0].direction == "down"
-    assert 4 in  c.counted_down
-    assert 4 not in c.counted_up
+    assert 4 in  c.counted_down_per_line[1]
+    assert 4 not in c.counted_up_per_line[1]
 
 
 # ---------------------------------------------------------------------------
@@ -178,8 +178,8 @@ def test_both_direction_up_after_down():
 
     assert len(evs_u) == 1 and evs_u[0].direction == "up"
 
-    assert 5 in c.counted_down
-    assert 5 in c.counted_up
+    assert 5 in c.counted_down_per_line[1]
+    assert 5 in c.counted_up_per_line[1]
 
 
 # ---------------------------------------------------------------------------
@@ -197,10 +197,13 @@ def test_both_no_cross_block():
     # Down crossing
     c.process_tracks([_above(6)], FRAME_H)
     c.process_tracks([_below(6)], FRAME_H)
-    assert 6 in c.counted_down
+    assert 6 in c.counted_down_per_line[1]
 
-    # _should_count_up must still return True
-    assert c._should_count_up(6), (
+    # The up-dedup set is the ONLY gate on a future up crossing, and being
+    # counted 'down' must not have populated it.  (This replaces the old
+    # ``c._should_count_up(6)`` helper, which no longer exists — its entire
+    # contract was "track is not already in the up dedup set".)
+    assert 6 not in c.counted_up_per_line[1], (
         "counted_down membership must not block a future up crossing"
     )
 
@@ -210,7 +213,7 @@ def test_both_no_cross_block():
 
     assert len(evs_u) == 1, f"Expected 1 up event, got {len(evs_u)}"
     assert evs_u[0].direction == "up"
-    assert 6 in c.counted_up
+    assert 6 in c.counted_up_per_line[1]
 
 
 # ---------------------------------------------------------------------------
@@ -290,8 +293,8 @@ def test_parallel_movement():
             f"Expected 0 events at x_offset={x_offset}, got {evs}"
         )
 
-    assert 20 not in c.counted_down
-    assert 20 not in c.counted_up
+    assert 20 not in c.counted_down_per_line[1]
+    assert 20 not in c.counted_up_per_line[1]
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +331,7 @@ def test_custom_angled_line_crossing():
     # cross product of line (800, 800) and movement (-200, 200) is:
     # 800 * 200 - 800 * (-200) = 160000 + 160000 = 320000 > 0 -> "down"
     assert evs2[0].direction == "down"
-    assert 1 in c.counted_down
+    assert 1 in c.counted_down_per_line[1]
 
     # Case B: Opposite crossing (from bottom-left to top-right)
     # Movement vector: (400, 600) -> (600, 400)
@@ -341,5 +344,136 @@ def test_custom_angled_line_crossing():
     evs2 = c.process_tracks([t2_frame2], FRAME_H, frame_w=FRAME_W)
     assert len(evs2) == 1
     assert evs2[0].direction == "up" # opposite sign -> "up"
-    assert 2 in c.counted_up
+    assert 2 in c.counted_up_per_line[1]
 
+
+# ---------------------------------------------------------------------------
+# Test 11 — brief occlusion must NOT drop the track's previous centroid
+# ---------------------------------------------------------------------------
+
+def test_occlusion_tolerance_preserves_prev_centroid():
+    """
+    A track that vanishes for a few frames (occlusion) and comes back must still
+    be compared against its pre-occlusion centroid, so the crossing it made
+    while hidden is still counted.
+    """
+    c = LineCounter(camera_id="occ_cam", line_y=0.5, direction="down",
+                    retire_after_frames=5)
+
+    c.process_tracks([_above(30)], FRAME_H)         # seed above the line
+
+    for _ in range(4):                              # 4 < 5 → not yet retired
+        assert c.process_tracks([], FRAME_H) == []
+        assert 30 in c.prev_centroids, "occluded track must keep its centroid"
+
+    evs = c.process_tracks([_below(30)], FRAME_H)   # reappears below the line
+    assert len(evs) == 1 and evs[0].direction == "down"
+
+
+# ---------------------------------------------------------------------------
+# Test 12 — (a) prev_centroids is pruned; recycled id emits no phantom count
+# ---------------------------------------------------------------------------
+
+def test_retired_track_centroid_evicted_no_phantom_count():
+    """
+    Once a track has been absent past the retirement threshold its centroid is
+    dropped.  A later vehicle that ByteTrack happens to give the same integer id
+    must therefore NOT be compared against the old vehicle's position — that
+    bogus long segment used to intersect the line and emit a phantom count.
+    """
+    c = LineCounter(camera_id="phantom_cam", line_y=0.5, direction="both",
+                    retire_after_frames=3)
+
+    c.process_tracks([_above(40)], FRAME_H)         # old vehicle, above line
+    assert 40 in c.prev_centroids
+
+    for _ in range(3):                              # absent long enough to retire
+        c.process_tracks([], FRAME_H)
+
+    assert 40 not in c.prev_centroids, "retired track must be evicted"
+    assert 40 not in c._frames_missing
+
+    # Same id recycled for a brand-new vehicle that appears below the line.
+    evs = c.process_tracks([_below(40)], FRAME_H)
+    assert evs == [], f"phantom count emitted for recycled id: {evs}"
+
+
+# ---------------------------------------------------------------------------
+# Test 13 — (b) dedup sets are pruned; a recycled id can be counted again
+# ---------------------------------------------------------------------------
+
+def test_retired_track_dedup_evicted_recycled_id_counts_again():
+    """
+    The dedup sets must not suppress an id forever.  After the original track
+    retires, a new vehicle reusing that id is a different vehicle and must be
+    counted on its own merits.
+    """
+    c = LineCounter(camera_id="recycle_cam", line_y=0.5, direction="down",
+                    retire_after_frames=3)
+
+    c.process_tracks([_above(41)], FRAME_H)
+    assert len(c.process_tracks([_below(41)], FRAME_H)) == 1
+    assert 41 in c.counted_down_per_line[1]
+
+    for _ in range(3):
+        c.process_tracks([], FRAME_H)
+
+    assert 41 not in c.counted_down_per_line[1], "retired id must leave the dedup set"
+
+    # New vehicle, recycled id, crosses down again → must be counted.
+    c.process_tracks([_above(41)], FRAME_H)
+    evs = c.process_tracks([_below(41)], FRAME_H)
+    assert len(evs) == 1 and evs[0].direction == "down"
+    assert c.total_down == 2, "both vehicles must be reflected in the running total"
+
+
+# ---------------------------------------------------------------------------
+# Test 14 — a still-visible vehicle is never retired, so never re-counted
+# ---------------------------------------------------------------------------
+
+def test_continuously_tracked_vehicle_never_recounted():
+    """
+    The core guarantee: while a track remains visible it is counted exactly once,
+    no matter how many frames elapse — the absence bookkeeping must reset every
+    frame the track is seen.
+    """
+    c = LineCounter(camera_id="persist_cam", line_y=0.5, direction="down",
+                    retire_after_frames=3)
+
+    c.process_tracks([_above(42)], FRAME_H)
+    assert len(c.process_tracks([_below(42)], FRAME_H)) == 1
+
+    # Stays visible below the line for far longer than the retirement window.
+    for _ in range(10):
+        assert c.process_tracks([_below(42)], FRAME_H) == []
+
+    assert 42 in c.counted_down_per_line[1], "visible track must not be retired"
+
+    # Crosses down a second time → still deduplicated.
+    c.process_tracks([_above(42)], FRAME_H)
+    assert c.process_tracks([_below(42)], FRAME_H) == []
+    assert c.total_down == 1
+
+
+# ---------------------------------------------------------------------------
+# Test 15 — internal state stays bounded across many short-lived tracks
+# ---------------------------------------------------------------------------
+
+def test_internal_state_bounded_over_many_tracks():
+    """
+    Simulate long runtime: 200 vehicles, each visible for 2 frames.  Internal
+    dicts/sets must not grow with the number of vehicles ever seen.
+    """
+    c = LineCounter(camera_id="bound_cam", line_y=0.5, direction="both",
+                    retire_after_frames=3)
+
+    for tid in range(100, 300):
+        c.process_tracks([_above(tid)], FRAME_H)
+        c.process_tracks([_below(tid)], FRAME_H)
+        for _ in range(3):                       # let it retire
+            c.process_tracks([], FRAME_H)
+
+    assert len(c.prev_centroids) == 0
+    assert len(c._frames_missing) == 0
+    assert len(c.counted_down_per_line[1]) == 0
+    assert c.total_down == 200, "running total must survive eviction"

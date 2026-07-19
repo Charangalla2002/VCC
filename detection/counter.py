@@ -10,6 +10,12 @@ Design decisions
   config works at any resolution.
 * ``process_tracks()`` is fully synchronous — no asyncio overhead — to keep the
   hot path as fast as possible.
+* All per-track state (``prev_centroids`` and the dedup sets) is evicted once a
+  track has been absent for ``retire_after_frames`` consecutive frames.  This
+  bounds memory over long runs and stops a recycled ByteTrack id from inheriting
+  the previous vehicle's centroid (which produced phantom counts) or its
+  "already counted" flag (which silently suppressed real ones).  The threshold
+  is deliberately several frames wide so brief occlusions do not retire a track.
 """
 
 from __future__ import annotations
@@ -65,10 +71,28 @@ class LineCounter:
     counting_line:   str | None      = None
     lines:           list[dict]      = field(default_factory=list)
 
+    # Number of consecutive frames a track may be absent before it is considered
+    # retired.  Until then its centroid and dedup entries are kept, so a track
+    # that briefly disappears behind an occlusion resumes exactly where it left
+    # off.  Once retired, all of its state is dropped so (a) memory stays bounded
+    # and (b) a recycled ByteTrack id starts from a clean slate.
+    retire_after_frames: int = 30
+
     # Internal state
     prev_centroids:  dict[int, tuple[float, float]] = field(default_factory=dict)
     counted_down_per_line: dict[int, set[int]] = field(default_factory=dict)
     counted_up_per_line:   dict[int, set[int]] = field(default_factory=dict)
+
+    # track_id -> consecutive frames not seen (0 while visible)
+    _frames_missing: dict[int, int] = field(default_factory=dict, repr=False)
+    # Reused across frames to keep the hot path allocation-free
+    _seen_this_frame: set[int] = field(default_factory=set, repr=False)
+
+    # Monotonic tallies.  The dedup sets are now evicted as tracks retire, so
+    # their sizes can no longer serve as running totals — these can only grow
+    # (until reset()) and keep ``total_down`` / ``total_up`` truthful.
+    _total_down: int = field(default=0, repr=False)
+    _total_up:   int = field(default=0, repr=False)
 
     def __post_init__(self):
         # If no lines list is provided, translate from counting_line / line_y
@@ -116,6 +140,19 @@ class LineCounter:
         if not frame_w:
             frame_w = 1920
 
+        # Resolve every track's id + centroid exactly once per frame (previously
+        # this was recomputed for every line, and again in a second pass).
+        current: list[tuple[int, float, float, Any]] = []
+        seen = self._seen_this_frame
+        seen.clear()
+        for track in tracks:
+            resolved = self._resolve(track)
+            if resolved is None:
+                continue
+            track_id, cx, cy = resolved
+            current.append((track_id, cx, cy, track))
+            seen.add(track_id)
+
         for line in self.lines:
             lid = line["id"]
             if lid not in self.counted_down_per_line:
@@ -131,25 +168,7 @@ class LineCounter:
             line_dir = line.get("direction", "both")
             lane_id = line.get("lane_id", 1)
 
-            for track in tracks:
-                tid_raw = track.id
-                if tid_raw is None:
-                    continue
-                try:
-                    track_id = int(tid_raw.item()) if hasattr(tid_raw, "item") else int(tid_raw)
-                except (TypeError, ValueError):
-                    continue
-
-                # Get bounding box
-                try:
-                    box = track.xyxy
-                    if hasattr(box, "shape") and len(box.shape) == 2:
-                      box = box[0]
-                    cx = (float(box[0]) + float(box[2])) / 2.0
-                    cy = (float(box[1]) + float(box[3])) / 2.0
-                except Exception:
-                    continue
-
+            for track_id, cx, cy, track in current:
                 prev_val = self.prev_centroids.get(track_id)
                 if prev_val is not None:
                     prev_x, prev_y = prev_val
@@ -163,6 +182,8 @@ class LineCounter:
                         crossed_up = cross_prod < 0
 
                         if crossed_down and line_dir != "up" and track_id not in self.counted_down_per_line[lid]:
+                            if not self._counted_anywhere(self.counted_down_per_line, track_id):
+                                self._total_down += 1
                             self.counted_down_per_line[lid].add(track_id)
                             events.append(CrossingEvent(
                                 track_id=track_id,
@@ -176,6 +197,8 @@ class LineCounter:
                             logger.debug("cam=%s track=%d Line %s DOWN", self.camera_id, track_id, line["name"])
 
                         elif crossed_up and line_dir != "down" and track_id not in self.counted_up_per_line[lid]:
+                            if not self._counted_anywhere(self.counted_up_per_line, track_id):
+                                self._total_up += 1
                             self.counted_up_per_line[lid].add(track_id)
                             events.append(CrossingEvent(
                                 track_id=track_id,
@@ -189,22 +212,56 @@ class LineCounter:
                             logger.debug("cam=%s track=%d Line %s UP", self.camera_id, track_id, line["name"])
 
         # Update prev_centroids at the end of the frame
-        for track in tracks:
-            tid_raw = track.id
-            if tid_raw is None:
+        missing = self._frames_missing
+        for track_id, cx, cy, _track in current:
+            self.prev_centroids[track_id] = (cx, cy)
+            missing[track_id] = 0
+
+        # Age out tracks that were not seen this frame.  Note the ordering: every
+        # track present above already had its counter reset to 0, so a vehicle
+        # that is still being tracked can never be retired here — the "counted
+        # exactly once while tracked" guarantee is preserved.  Only after
+        # ``retire_after_frames`` consecutive absences is the id considered
+        # retired and all of its state dropped, which both bounds memory and lets
+        # a recycled id be counted again as the new vehicle it now represents.
+        retired: list[int] | None = None
+        for track_id, absent in missing.items():
+            if track_id in seen:
                 continue
-            try:
-                track_id = int(tid_raw.item()) if hasattr(tid_raw, "item") else int(tid_raw)
-                box = track.xyxy
-                if hasattr(box, "shape") and len(box.shape) == 2:
-                    box = box[0]
-                cx = (float(box[0]) + float(box[2])) / 2.0
-                cy = (float(box[1]) + float(box[3])) / 2.0
-                self.prev_centroids[track_id] = (cx, cy)
-            except Exception:
-                pass
+            absent += 1
+            missing[track_id] = absent
+            if absent >= self.retire_after_frames:
+                if retired is None:
+                    retired = []
+                retired.append(track_id)
+
+        if retired is not None:
+            for track_id in retired:
+                del missing[track_id]
+                self.prev_centroids.pop(track_id, None)
+                for counted in self.counted_down_per_line.values():
+                    counted.discard(track_id)
+                for counted in self.counted_up_per_line.values():
+                    counted.discard(track_id)
 
         return events
+
+    @staticmethod
+    def _resolve(track: Any) -> tuple[int, float, float] | None:
+        """Return ``(track_id, centroid_x, centroid_y)``, or None if unusable."""
+        tid_raw = track.id
+        if tid_raw is None:
+            return None
+        try:
+            track_id = int(tid_raw.item()) if hasattr(tid_raw, "item") else int(tid_raw)
+            box = track.xyxy
+            if hasattr(box, "shape") and len(box.shape) == 2:
+                box = box[0]
+            cx = (float(box[0]) + float(box[2])) / 2.0
+            cy = (float(box[1]) + float(box[3])) / 2.0
+        except Exception:
+            return None
+        return track_id, cx, cy
 
     def _get_class(self, track: Any) -> str:
         try:
@@ -223,6 +280,10 @@ class LineCounter:
 
     def reset(self) -> None:
         self.prev_centroids.clear()
+        self._frames_missing.clear()
+        self._seen_this_frame.clear()
+        self._total_down = 0
+        self._total_up = 0
         self.counted_down_per_line.clear()
         self.counted_up_per_line.clear()
         for line in self.lines:
@@ -230,19 +291,21 @@ class LineCounter:
             self.counted_down_per_line[lid] = set()
             self.counted_up_per_line[lid] = set()
 
+    @staticmethod
+    def _counted_anywhere(per_line: dict[int, set[int]], track_id: int) -> bool:
+        """True if *track_id* is already in any line's dedup set."""
+        for s in per_line.values():
+            if track_id in s:
+                return True
+        return False
+
     @property
     def total_down(self) -> int:
-        unique = set()
-        for s in self.counted_down_per_line.values():
-            unique.update(s)
-        return len(unique)
+        return self._total_down
 
     @property
     def total_up(self) -> int:
-        unique = set()
-        for s in self.counted_up_per_line.values():
-            unique.update(s)
-        return len(unique)
+        return self._total_up
 
 
 
