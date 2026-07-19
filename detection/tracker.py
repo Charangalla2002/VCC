@@ -193,6 +193,43 @@ def _draw_counters(
 # HTTP posting helper
 # ---------------------------------------------------------------------------
 
+#: Consecutive failed reads before an uploaded video is declared finished.
+#: A single failed decode mid-file must not truncate the run.
+EOF_CONFIRM_READS = 5
+
+
+async def _report_video_complete(
+    client: httpx.AsyncClient,
+    camera_id: str,
+    status: str,
+    detail: str | None = None,
+) -> None:
+    """
+    Tell the backend an uploaded video finished processing.
+
+    Best-effort: a failure here leaves the job showing as still processing, which
+    is recoverable and far better than crashing the camera task after the events
+    have already been recorded.
+    """
+    url = f"{config.API_BASE_URL}/api/videos/{camera_id}/complete"
+    payload: dict[str, Any] = {"status": status}
+    if detail:
+        payload["detail"] = detail
+    try:
+        response = await client.post(
+            url,
+            json=payload,
+            headers={"X-API-Key": config.SERVICE_API_KEY},
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        logger.info("[%s] Reported video status '%s' to backend.", camera_id, status)
+    except Exception as exc:
+        logger.warning(
+            "[%s] Could not report video completion (%s): %s", camera_id, status, exc
+        )
+
+
 async def _post_event(
     client: httpx.AsyncClient,
     event:  CrossingEvent,
@@ -611,6 +648,14 @@ async def run_camera(
     if is_file_source:
         logger.info("[%s] File source detected — using sequential capture (no frame drops).", camera_id)
 
+    # An uploaded video is a finite job: process it once and report a result.
+    # Looping it (the behaviour a live/demo file source wants) would keep
+    # re-counting the same vehicles and inflate the report without bound.
+    single_pass = str(camera_config.get("source_type") or "live") == "upload"
+    eof_streak = 0
+    if single_pass:
+        logger.info("[%s] Uploaded video — single-pass mode, will finish at EOF.", camera_id)
+
     logger.info("[%s] Opening source: %s", camera_id, source_parsed)
 
     model = load_model()
@@ -720,10 +765,30 @@ async def run_camera(
                         await asyncio.sleep(0.2)
                         continue
 
-                    # If we reached the end of a video file, loop back
-                    if not using_native_gst and str(source_parsed).endswith(('.mp4', '.avi', '.mkv')):
-                        if hasattr(cap, "set"):
-                            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    # End of a video file.
+                    #
+                    # Keyed off is_file_source rather than an extension whitelist:
+                    # the old check listed only .mp4/.avi/.mkv, so an uploaded .mov
+                    # or .webm fell through to the reconnect ladder and was treated
+                    # as a dead camera.
+                    if not using_native_gst and is_file_source:
+                        eof_streak += 1
+                        # Require a few consecutive failures before declaring the
+                        # file finished, so one transient decode hiccup mid-clip
+                        # cannot truncate the run and publish a short count.
+                        if single_pass and eof_streak >= EOF_CONFIRM_READS:
+                            logger.info(
+                                "[%s] End of uploaded video — single pass complete. "
+                                "Counted %d down / %d up.",
+                                camera_id, counter.total_down, counter.total_up,
+                            )
+                            await _report_video_complete(http_client, camera_id, "completed")
+                            return
+
+                        if not single_pass:
+                            # Live/demo file source: loop so the feed keeps playing.
+                            if hasattr(cap, "set"):
+                                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         # Always yield — without this the rewind path is a hot
                         # busy-loop that starves the event loop.
                         await asyncio.sleep(0.05)
@@ -772,6 +837,10 @@ async def run_camera(
                     logger.info("[%s] Capture recovered after %d failed attempts.", camera_id, fail_streak)
                     fail_streak = 0
                     backoff     = RECONNECT_BASE_BACKOFF
+                # A good frame means we are not at EOF, so the confirmation streak
+                # must restart — otherwise scattered hiccups across a long video
+                # would accumulate and end the job early.
+                eof_streak = 0
                 connecting_logged = False
 
                 if not is_new:

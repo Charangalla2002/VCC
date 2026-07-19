@@ -17,7 +17,9 @@ load_dotenv(os.path.join(_REPO_ROOT, "backend", ".env"))
 sys.path.append(os.path.join(_REPO_ROOT, "backend"))
 from db_dialect import create_engine_from_url, normalize_database_url  # noqa: E402
 
-DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL"))
+# No argument — see backend/database.py: passing the ambient value explicitly
+# bypasses the VCC_DATABASE_URL / project-.env precedence chain.
+DATABASE_URL = normalize_database_url()
 
 sys.path.append('detection')
 import config
@@ -62,12 +64,25 @@ async def fetch_cameras():
                 })
 
             # Fetch cameras
+            # source_type distinguishes a live feed from an uploaded video, which
+            # is processed once and then reported rather than looped forever.
+            # COALESCE so rows predating the column still behave as live cameras.
             rows = (await conn.execute(text(
-                "SELECT id, name, rtsp_url, location_id, counting_line FROM cameras"
+                "SELECT id, name, rtsp_url, location_id, counting_line, "
+                "COALESCE(source_type, 'live') AS source_type, "
+                "processing_status "
+                "FROM cameras"
             ))).mappings().all()
 
         cams = []
         for r in rows:
+            # An uploaded video that has already been processed is a finished job,
+            # not a camera. Its task exits at EOF, and without this the supervisor
+            # would see a completed task and respawn it every poll -- reprocessing
+            # the same file forever and multiplying its counts.
+            if r["source_type"] == "upload" and r["processing_status"] in ("completed", "failed"):
+                continue
+
             url = r["rtsp_url"]
             if not url:
                 url = "0" # fallback to webcam if no url
@@ -81,7 +96,9 @@ async def fetch_cameras():
                 "direction": os.getenv("VCC_DEFAULT_DIRECTION", "both"),
                 "line_y": float(os.getenv("VCC_DEFAULT_LINE_Y", "0.5")),
                 "counting_line": r["counting_line"],
-                "counting_lines": cam_lines_map.get(cid_str, [])
+                "counting_lines": cam_lines_map.get(cid_str, []),
+                "source_type": r["source_type"],
+                "processing_status": r["processing_status"],
             })
         return cams
     except Exception as e:
