@@ -154,7 +154,10 @@ class VideoRead(BaseModel):
 class VideoCompleteRequest(BaseModel):
     """Posted by the detection process when a single pass over the file ends."""
 
-    status: str = Field(..., pattern="^(completed|failed)$")
+    # 'processing' is reported when decoding actually begins. Without it a job
+    # would sit at 'pending' until EOF and then jump straight to 'completed',
+    # and the UI only offers the live annotated preview in the 'processing' state.
+    status: str = Field(..., pattern="^(processing|completed|failed)$")
     detail: Optional[str] = Field(None, max_length=2000)
 
 

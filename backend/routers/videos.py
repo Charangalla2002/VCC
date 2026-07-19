@@ -493,7 +493,10 @@ async def complete_video(
     camera = await _get_upload_camera(db, camera_id)
 
     camera.processing_status = body.status
-    camera.processed_at = datetime.now(timezone.utc)
+    # processed_at means "finished", so only stamp it on a terminal state --
+    # otherwise a job would advertise a completion time while still running.
+    if body.status in ("completed", "failed"):
+        camera.processed_at = datetime.now(timezone.utc)
     if body.status == "failed":
         # A file that cannot be decoded must not be retried forever by the
         # supervisor's 5-second poll, and it should not sit in Live View

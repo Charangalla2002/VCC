@@ -26,7 +26,11 @@ load_dotenv()
 # everything switches over. normalize_database_url() also makes a relative SQLite
 # path absolute, so the backend (cwd=backend/) and the detection process
 # (cwd=repo root) resolve to the same file.
-DATABASE_URL: str = normalize_database_url(os.getenv("DATABASE_URL"))
+# No argument: let normalize_database_url() apply the full precedence chain
+# (VCC_DATABASE_URL -> this repo's .env -> ambient DATABASE_URL -> default).
+# Passing os.getenv("DATABASE_URL") here would hand it the ambient value directly
+# and bypass that chain, which is how a foreign DATABASE_URL took over.
+DATABASE_URL: str = normalize_database_url()
 
 engine = create_engine_from_url(DATABASE_URL)
 

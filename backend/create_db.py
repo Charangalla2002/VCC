@@ -22,11 +22,10 @@ from db_dialect import normalize_database_url, sqlite_file_path  # noqa: E402
 async def create_database():
     load_dotenv()
 
-    raw_url = os.getenv("DATABASE_URL")
-    if not raw_url:
-        print("Note: DATABASE_URL not set; falling back to the default SQLite database.")
-
-    db_url = normalize_database_url(raw_url)
+    # No argument: use the full precedence chain rather than the ambient variable,
+    # which on a shared machine may belong to an entirely different project. This
+    # function creates databases, so pointing it at the wrong server matters.
+    db_url = normalize_database_url()
     url = make_url(db_url)
 
     # ---- SQLite -----------------------------------------------------------

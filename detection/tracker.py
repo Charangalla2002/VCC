@@ -721,6 +721,13 @@ async def run_camera(
             pass
 
         logger.info("[%s] Capture open. Starting inference loop.", camera_id)
+
+        # Announce that an uploaded video has actually started decoding. Without
+        # this it would sit at 'pending' until EOF and then jump straight to
+        # 'completed' -- and the UI only offers the live annotated preview while a
+        # job reads 'processing', so the user would never see it work.
+        if single_pass:
+            await _report_video_complete(http_client, camera_id, "processing")
         
         # CPU Optimization: target FPS pacing
         target_fps = float(os.getenv("VCC_TARGET_FPS", "10.0"))
