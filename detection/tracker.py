@@ -83,6 +83,11 @@ def load_model() -> Any:
 # Frame annotation helpers
 # ---------------------------------------------------------------------------
 
+def _is_network_source(src: str) -> bool:
+    """True for stream URLs (rtsp/http/udp/…), False for local file paths."""
+    return "://" in src
+
+
 def _hex_to_bgr(hex_str: str) -> tuple[int, int, int]:
     """Convert a '#RRGGBB' string to an OpenCV BGR tuple."""
     try:
@@ -281,8 +286,23 @@ class ThreadedRTSPCapture:
         source_parsed: int | str,
         first_frame_timeout: float | None = None,
         stall_timeout: float | None = None,
+        sequential: bool = False,
     ):
         self.source_parsed = source_parsed
+        # Live sources (RTSP/webcam) use latest-frame-wins: the newest frame is
+        # always the interesting one and stale frames are worthless, so the reader
+        # overwrites a single slot and the consumer samples whatever is current.
+        #
+        # A FILE is the opposite. Every frame is content, and the reader can decode
+        # the whole clip in well under a second while inference takes ~200ms per
+        # frame -- so latest-wins silently discards almost all of it. Measured on a
+        # 90-frame clip: only 6 frames ever reached inference and the vehicle was
+        # never counted. Sequential mode applies back-pressure so the reader hands
+        # over exactly one frame per consumer read, and nothing is dropped.
+        self.sequential = sequential
+        # Set == "consumer has taken the frame in the slot, produce the next one".
+        self._taken = threading.Event()
+        self._taken.set()
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|buffer_size;10240000|max_delay;500000"
         self.cap = cv2.VideoCapture(source_parsed, cv2.CAP_FFMPEG)
         self.latest_frame = None
@@ -384,6 +404,14 @@ class ThreadedRTSPCapture:
                     except Exception:
                         logger.debug("Capture set(%s, %s) failed", prop_id, value)
 
+                # Sequential (file) mode: do not decode ahead of the consumer.
+                # Waiting in slices keeps release() responsive.
+                if self.sequential:
+                    while self.running and not self._taken.wait(timeout=0.1):
+                        pass
+                    if not self.running:
+                        break
+
                 # ---- BLOCKING network decode happens OUTSIDE the lock -------
                 try:
                     ret, frame = cap.read()
@@ -398,6 +426,11 @@ class ThreadedRTSPCapture:
                         self.ret = True
                         self.frame_seq += 1
                         self.last_frame_ts = time.monotonic()
+                    # Hold here until the consumer has actually taken this frame.
+                    # Cleared only on success: a failed read produced nothing, so
+                    # the consumer owes no acknowledgement and we must not block.
+                    if self.sequential:
+                        self._taken.clear()
                 else:
                     # ``ret`` must track the CURRENT health of the capture, not
                     # "did we ever succeed".  Leaving it latched True made the
@@ -433,7 +466,15 @@ class ThreadedRTSPCapture:
             # loss, decoder warm-up).  Only sustained silence counts as a
             # failure, so a blip does not trip the reconnect ladder.
             ret = self.ret or self._health_locked() == self.OK
-            return ret, self.latest_frame.copy(), is_new
+            frame = self.latest_frame.copy()
+
+        # Acknowledge OUTSIDE the lock: this releases the reader thread to decode
+        # the next frame, and the reader takes self.lock to store it.  Signalling
+        # while holding the lock would hand it a thread that immediately blocks.
+        if is_new and self.sequential:
+            self._taken.set()
+
+        return ret, frame, is_new
 
     # -- liveness ----------------------------------------------------------
 
@@ -562,6 +603,14 @@ async def run_camera(
     except (ValueError, TypeError):
         source_parsed = source
 
+    # A local file is finite content, not a live feed: every frame matters, so the
+    # capture must hand them over one-for-one instead of dropping whatever the
+    # consumer was too slow to sample. Network URLs and device indices stay on the
+    # latest-frame-wins path, where dropping stale frames is the correct behaviour.
+    is_file_source = isinstance(source_parsed, str) and not _is_network_source(source_parsed)
+    if is_file_source:
+        logger.info("[%s] File source detected — using sequential capture (no frame drops).", camera_id)
+
     logger.info("[%s] Opening source: %s", camera_id, source_parsed)
 
     model = load_model()
@@ -604,7 +653,7 @@ async def run_camera(
             # FFMPEG / OpenCV fallback with dedicated background frame reader thread
             logger.info("[%s] Opening source using Threaded RTSP Capture (TCP Transport)...", camera_id)
             cap = await loop.run_in_executor(
-                None, lambda: ThreadedRTSPCapture(source_parsed)
+                None, lambda: ThreadedRTSPCapture(source_parsed, sequential=is_file_source)
             )
             if not cap.isOpened():
                 logger.error(
@@ -709,10 +758,10 @@ async def run_camera(
                         else:
                             gst_cap.release()
                             logger.warning("[%s] GStreamer reconnect failed, trying FFMPEG.", camera_id)
-                            cap = await loop.run_in_executor(None, lambda: ThreadedRTSPCapture(source_parsed))
+                            cap = await loop.run_in_executor(None, lambda: ThreadedRTSPCapture(source_parsed, sequential=is_file_source))
                             using_native_gst = False
                     else:
-                        cap = await loop.run_in_executor(None, lambda: ThreadedRTSPCapture(source_parsed))
+                        cap = await loop.run_in_executor(None, lambda: ThreadedRTSPCapture(source_parsed, sequential=is_file_source))
                     # The replacement capture gets its own first-frame grace
                     # window, so let it announce itself again.
                     connecting_logged = False
