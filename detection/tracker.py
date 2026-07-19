@@ -81,12 +81,15 @@ def load_model() -> Any:
 
 # ---------------------------------------------------------------------------
 # Frame annotation helpers
-# -------------------------------------------------------------------def _hex_to_bgr(hex_str: str) -> tuple[int, int, int]:
+# ---------------------------------------------------------------------------
+
+def _hex_to_bgr(hex_str: str) -> tuple[int, int, int]:
+    """Convert a '#RRGGBB' string to an OpenCV BGR tuple."""
     try:
         hex_str = hex_str.lstrip("#")
-        return tuple(int(hex_str[i:i+2], 16) for i in (4, 2, 0)) # BGR order
+        return tuple(int(hex_str[i:i+2], 16) for i in (4, 2, 0))  # BGR order
     except Exception:
-        return (255, 212, 0) # Fallback to cyan
+        return (255, 212, 0)  # Fallback to cyan (#00d4ff)
 
 
 def _draw_lines(frame: np.ndarray, counter: LineCounter) -> None:
