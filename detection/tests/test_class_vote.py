@@ -175,5 +175,55 @@ def test_upward_crossing_also_uses_the_vote():
     assert events[0].vehicle_class == "bus"
 
 
+
+
+# ---------------------------------------------------------------------------
+# Tracker / counter window alignment
+# ---------------------------------------------------------------------------
+
+def test_retirement_window_outlasts_the_tracker_buffer():
+    """
+    The counter must not forget a vehicle while the tracker can still resurrect
+    it under the same id.
+
+    ByteTrack keeps a lost track re-acquirable for `track_buffer` frames. If the
+    counter retires that id first, its dedup entry is gone, so when the tracker
+    brings the vehicle back the next crossing is counted a second time. Deriving
+    one from the other is only safe if this ordering holds.
+    """
+    import importlib
+    import config as cfg
+    importlib.reload(cfg)
+
+    assert cfg.RETIRE_AFTER_FRAMES > cfg.TRACK_BUFFER, (
+        f"counter retires at {cfg.RETIRE_AFTER_FRAMES} frames but the tracker "
+        f"can resurrect ids for {cfg.TRACK_BUFFER} — a resurrected track would "
+        "be counted twice"
+    )
+
+
+def test_tracker_yaml_track_buffer_matches_config():
+    """
+    The YAML drives the tracker; config.TRACK_BUFFER drives the counter's window.
+    They are two declarations of one number, so drift silently breaks the
+    invariant above.
+    """
+    import yaml
+    import config as cfg
+
+    with open(cfg.TRACKER) as fh:
+        tracker_cfg = yaml.safe_load(fh)
+
+    assert tracker_cfg["track_buffer"] == cfg.TRACK_BUFFER, (
+        f"{cfg.TRACKER} says track_buffer={tracker_cfg['track_buffer']} but "
+        f"config.TRACK_BUFFER={cfg.TRACK_BUFFER}"
+    )
+
+
+def test_counter_defaults_to_the_configured_retirement_window():
+    import config as cfg
+    assert _counter().retire_after_frames == cfg.RETIRE_AFTER_FRAMES
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

@@ -22,8 +22,40 @@ FALLBACK_MODEL: str = os.getenv("VCC_FALLBACK_MODEL", "yolo11n.pt")
 """Fallback model used when MODEL_PATH cannot be loaded."""
 
 
-TRACKER: str = os.getenv("VCC_TRACKER", "bytetrack.yaml")
-"""ByteTrack configuration file passed to ultralytics .track()."""
+TRACKER: str = os.getenv(
+    "VCC_TRACKER",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "bytetrack_vcc.yaml"),
+)
+"""
+ByteTrack configuration file passed to ultralytics ``.track()``.
+
+Defaults to this repo's own ``bytetrack_vcc.yaml`` rather than ultralytics'
+built-in ``bytetrack.yaml``, so tracker behaviour is pinned here and an
+ultralytics upgrade cannot silently change counts. Absolute path because the
+detection process and the tests run from different working directories.
+"""
+
+TRACK_BUFFER: int = int(os.getenv("VCC_TRACK_BUFFER", "60"))
+"""
+Frames a lost track stays re-acquirable. Must mirror ``track_buffer`` in the
+tracker YAML — it is declared here so the counter can size its own retirement
+window against it (see ``RETIRE_AFTER_FRAMES``).
+"""
+
+RETIRE_AFTER_FRAMES: int = int(
+    os.getenv("VCC_RETIRE_AFTER_FRAMES", str(int(TRACK_BUFFER * 1.5)))
+)
+"""
+Frames a track may be absent before the counter forgets it entirely (centroid,
+dedup entry and class votes).
+
+This MUST stay longer than ``TRACK_BUFFER``. The tracker can resurrect a lost
+track with its original id for ``track_buffer`` frames; if the counter has
+already retired that id it no longer remembers the vehicle was counted, so a
+subsequent crossing is recorded a second time. Deriving it from TRACK_BUFFER
+rather than hard-coding keeps the two from drifting apart when either is tuned.
+"""
+
 
 CONF_THRESHOLD: float = float(os.getenv("VCC_CONF", "0.45"))
 """Minimum YOLO confidence score to keep a detection."""

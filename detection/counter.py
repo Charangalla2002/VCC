@@ -76,7 +76,12 @@ class LineCounter:
     # that briefly disappears behind an occlusion resumes exactly where it left
     # off.  Once retired, all of its state is dropped so (a) memory stays bounded
     # and (b) a recycled ByteTrack id starts from a clean slate.
-    retire_after_frames: int = 30
+    # Defaults to config.RETIRE_AFTER_FRAMES, which is derived from the tracker's
+    # track_buffer. It must exceed track_buffer: the tracker can resurrect a lost
+    # track under its original id for that long, and if this counter has already
+    # forgotten the id it no longer knows the vehicle was counted, so the next
+    # crossing is recorded twice. See config.RETIRE_AFTER_FRAMES.
+    retire_after_frames: int = field(default_factory=lambda: config.RETIRE_AFTER_FRAMES)
 
     # Internal state
     prev_centroids:  dict[int, tuple[float, float]] = field(default_factory=dict)

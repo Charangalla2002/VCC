@@ -1,0 +1,49 @@
+# ByteTrack configuration for vehicle counting.
+#
+# Copied from the ultralytics default so the values are pinned here rather than
+# inherited from whatever version of the package happens to be installed. An
+# ultralytics upgrade silently changing tracker behaviour would show up as a
+# change in counts with no change in this repo.
+#
+# IMPORTANT, and easy to get wrong: in this ultralytics version track_buffer is
+# used directly (`max_frames_lost = args.track_buffer`) with NO frame-rate
+# scaling. It is a count of PROCESSED frames, not wall-clock. The pipeline paces
+# inference at VCC_TARGET_FPS (default 10), so:
+#
+#     tolerance_seconds = track_buffer / VCC_TARGET_FPS
+#
+# At 10 fps the value below is ~6 seconds of occlusion tolerance. If you raise
+# VCC_TARGET_FPS you are also shortening that window in real time, and should
+# raise track_buffer to match.
+#
+# See also VCC_TRACK_BUFFER in detection/config.py, which keeps the counter's
+# own track-retirement window safely longer than this value.
+
+tracker_type: bytetrack
+
+# Detection confidence bands for the two association stages.
+track_high_thresh: 0.25 # first pass, confident detections
+track_low_thresh: 0.1 # second pass, recovers weak/partly occluded vehicles
+
+# Confidence required to open a NEW track. Raising this suppresses spurious
+# short-lived tracks from noise; too high and genuinely distant or small
+# vehicles are never picked up at all. Measured on the sample clip, 0.4 cut
+# fragmentation from 8 tracks to 6 for 4 vehicles without changing the count --
+# but that clip has no occlusion, so treat this as a starting point to validate
+# against your own footage rather than a tuned value.
+new_track_thresh: 0.25
+
+# Frames a lost track stays re-acquirable. Higher recovers vehicles that pass
+# behind others instead of assigning them a fresh id; too high and an id can be
+# handed to a different vehicle that happens to appear where the old one was.
+track_buffer: 60
+
+# Association cost ceiling, where cost = 1 - IoU, matched when cost <= thresh.
+# Higher is MORE permissive. This matters at low processing fps: vehicles move
+# far between processed frames, so IoU between consecutive observations drops
+# and a strict threshold breaks the track.
+match_thresh: 0.8
+
+# Blend detection confidence into the association cost, which stabilises
+# matching when detections are weak.
+fuse_score: true
