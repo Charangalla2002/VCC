@@ -103,6 +103,20 @@ class LineCounter:
     _tally_down: dict[int, int] = field(default_factory=dict, repr=False)
     _tally_up:   dict[int, int] = field(default_factory=dict, repr=False)
 
+    # Per-track class evidence: track_id -> {class_id: [frames_seen, confidence_sum]}.
+    #
+    # The class written to an event used to be whatever the detector happened to
+    # say on the single frame the vehicle crossed the line. YOLO's class output
+    # flickers frame to frame -- a bus is intermittently a truck, a car a van --
+    # so the recorded class was decided by a coin flip at one arbitrary instant.
+    # Measured on the sample clip, roughly a quarter of counts came back with the
+    # wrong class while the vehicle was correctly identified in most other frames.
+    #
+    # Accumulating a running tally per class costs O(number of classes) per track
+    # rather than growing with the length of the track, so a vehicle lingering in
+    # frame cannot grow this without bound.
+    _class_votes: dict[int, dict[int, list[float]]] = field(default_factory=dict, repr=False)
+
     def __post_init__(self):
         # If no lines list is provided, translate from counting_line / line_y
         if not self.lines:
@@ -264,6 +278,10 @@ class LineCounter:
             track_id, cx, cy = resolved
             current.append((track_id, cx, cy, track))
             seen.add(track_id)
+            # Record class evidence once per track per FRAME. Doing this inside
+            # the per-line loop below would count the same observation once for
+            # every configured line and skew the vote on multi-line cameras.
+            self._record_class_vote(track_id, track)
 
         for line in self.lines:
             lid = line["id"]
@@ -298,11 +316,14 @@ class LineCounter:
                                 self._total_down += 1
                             self._tally_down[lid] = self._tally_down.get(lid, 0) + 1
                             self.counted_down_per_line[lid].add(track_id)
+                            # Majority vote over the track's whole life, not this
+                            # single frame -- see _class_votes.
+                            voted_class, voted_conf = self._voted_class(track_id, track)
                             events.append(CrossingEvent(
                                 track_id=track_id,
                                 direction="down",
-                                vehicle_class=self._get_class(track),
-                                confidence=self._get_conf(track),
+                                vehicle_class=voted_class,
+                                confidence=voted_conf,
                                 camera_id=self.camera_id,
                                 timestamp=now,
                                 lane_id=lane_id
@@ -314,11 +335,12 @@ class LineCounter:
                                 self._total_up += 1
                             self._tally_up[lid] = self._tally_up.get(lid, 0) + 1
                             self.counted_up_per_line[lid].add(track_id)
+                            voted_class, voted_conf = self._voted_class(track_id, track)
                             events.append(CrossingEvent(
                                 track_id=track_id,
                                 direction="up",
-                                vehicle_class=self._get_class(track),
-                                confidence=self._get_conf(track),
+                                vehicle_class=voted_class,
+                                confidence=voted_conf,
                                 camera_id=self.camera_id,
                                 timestamp=now,
                                 lane_id=lane_id
@@ -353,6 +375,10 @@ class LineCounter:
             for track_id in retired:
                 del missing[track_id]
                 self.prev_centroids.pop(track_id, None)
+                # Class evidence retires with the track. Keeping it would leak on
+                # a long run and, worse, let a recycled track id inherit the
+                # previous vehicle's class votes.
+                self._class_votes.pop(track_id, None)
                 for counted in self.counted_down_per_line.values():
                     counted.discard(track_id)
                 for counted in self.counted_up_per_line.values():
@@ -377,6 +403,54 @@ class LineCounter:
             return None
         return track_id, cx, cy
 
+    def _record_class_vote(self, track_id: int, track: Any) -> None:
+        """Add this frame's detection to the track's running class tally."""
+        try:
+            cls_raw = track.cls
+            cls_id = int(cls_raw.item() if hasattr(cls_raw, "item") else cls_raw)
+        except Exception:
+            return
+        try:
+            conf_raw = track.conf
+            conf = float(conf_raw.item() if hasattr(conf_raw, "item") else conf_raw)
+        except Exception:
+            conf = 0.0
+
+        votes = self._class_votes.get(track_id)
+        if votes is None:
+            votes = self._class_votes[track_id] = {}
+        entry = votes.get(cls_id)
+        if entry is None:
+            votes[cls_id] = [1.0, conf]
+        else:
+            entry[0] += 1.0
+            entry[1] += conf
+
+    def _voted_class(self, track_id: int, track: Any) -> tuple[str, float]:
+        """
+        Best class for a track across its whole life, with mean confidence.
+
+        Ranked by summed confidence rather than raw frame count: that blends how
+        often a class was seen with how sure the detector was, so a handful of
+        confident frames can outweigh a longer run of marginal ones, while a class
+        seen in the clear majority of frames still wins comfortably. Frame count
+        breaks ties so the result is deterministic.
+
+        Falls back to the current frame's reading when a track has no recorded
+        history -- it can be counted on the very first frame it is seen, before
+        any evidence has accumulated.
+        """
+        votes = self._class_votes.get(track_id)
+        if not votes:
+            return self._get_class(track), self._get_conf(track)
+
+        best_id, (frames, conf_sum) = max(
+            votes.items(), key=lambda kv: (kv[1][1], kv[1][0])
+        )
+        name = config.VEHICLE_CLASS_MAP.get(best_id, f"class_{best_id}")
+        mean_conf = (conf_sum / frames) if frames else 0.0
+        return name, mean_conf
+
     def _get_class(self, track: Any) -> str:
         try:
             cls_raw  = track.cls
@@ -400,6 +474,7 @@ class LineCounter:
         self._total_up = 0
         self._tally_down.clear()
         self._tally_up.clear()
+        self._class_votes.clear()
         self.counted_down_per_line.clear()
         self.counted_up_per_line.clear()
         for line in self.lines:
