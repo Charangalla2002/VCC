@@ -64,7 +64,22 @@ async def fetch_cameras():
         print(f"[SYSTEM] Database error fetching cameras: {e}")
         return []
 
-async def monitor_cameras_loop(active_tasks, queues):
+async def monitor_cameras_loop(active_tasks, queues, counters=None):
+    """
+    Reconcile running camera pipelines against the database every few seconds.
+
+    Change classification matters here. Only the video *source* requires tearing
+    down a pipeline -- that is the one thing we cannot swap without reopening the
+    capture. Counting-line edits are applied in place via ``LineCounter.update_lines``.
+
+    Previously any difference at all (including a colour change, because whole
+    dicts were compared) cancelled the task. That reloaded the YOLO model, dropped
+    the RTSP connection, and reset the counter -- which double-counted every vehicle
+    still on screen, and made the operator's live view stutter every time they
+    touched the editor.
+    """
+    if counters is None:
+        counters = {}
     print("[SYSTEM] Starting dynamic camera coordinator loop...")
     while True:
         try:
@@ -86,6 +101,7 @@ async def monitor_cameras_loop(active_tasks, queues):
                         print(f"[SYSTEM] Camera {camera_id} task exited.")
                     active_tasks.pop(camera_id)
                     queues.pop(camera_id, None)
+                    counters.pop(camera_id, None)
                     continue
 
                 if camera_id not in db_cameras_map:
@@ -93,19 +109,40 @@ async def monitor_cameras_loop(active_tasks, queues):
                     task = active_tasks.pop(camera_id)
                     task.cancel()
                     queues.pop(camera_id, None)
+                    counters.pop(camera_id, None)
                 else:
-                    # Check if source or configuration changed
                     running_config = current_task.vcc_config
                     db_config = db_cameras_map[camera_id]
-                    if (
-                        running_config["source"] != db_config["source"] or 
-                        running_config.get("counting_line") != db_config.get("counting_line") or
-                        running_config.get("counting_lines") != db_config.get("counting_lines")
-                    ):
-                        print(f"[SYSTEM] Camera {camera_id} configuration changed. Restarting pipeline...")
+
+                    # Only a source change forces a restart.
+                    if running_config["source"] != db_config["source"]:
+                        print(f"[SYSTEM] Camera {camera_id} source changed. Restarting pipeline...")
                         task = active_tasks.pop(camera_id)
                         task.cancel()
                         queues.pop(camera_id, None)
+                        counters.pop(camera_id, None)
+                        continue
+
+                    # Everything else is applied live, with no interruption.
+                    counter = counters.get(camera_id)
+                    if counter is not None:
+                        new_lines = db_config.get("counting_lines") or []
+                        if new_lines:
+                            counter.update_lines(new_lines)
+                        elif db_config.get("counting_line") != running_config.get("counting_line"):
+                            # Legacy single-line column still in use for this camera.
+                            print(
+                                f"[SYSTEM] Camera {camera_id} legacy counting_line changed. "
+                                "Restarting pipeline..."
+                            )
+                            task = active_tasks.pop(camera_id)
+                            task.cancel()
+                            queues.pop(camera_id, None)
+                            counters.pop(camera_id, None)
+                            continue
+
+                    # Keep the attached config current so the next pass diffs correctly.
+                    current_task.vcc_config = db_config
 
 
             # 2. Start tasks for new cameras
@@ -130,6 +167,9 @@ async def monitor_cameras_loop(active_tasks, queues):
                     )
                     task.vcc_config = cam  # Attach config to task for change-detection
                     active_tasks[camera_id] = task
+                    # Retained so later line edits can be applied to the live counter
+                    # instead of being forced through a pipeline restart.
+                    counters[camera_id] = counter
 
 
 
@@ -142,13 +182,14 @@ async def run():
     try:
         active_tasks = {}
         queues = {}
-        
+        counters = {}
+
         # Start the HTTP streamer server
         print("[SYSTEM] Starting MJPEG Streamer Server (Port 8001)...")
         streamer_task = asyncio.create_task(start_server(queues))
-        
+
         # Run the dynamic coordinator
-        await monitor_cameras_loop(active_tasks, queues)
+        await monitor_cameras_loop(active_tasks, queues, counters)
     except Exception as e:
         print(f"[SYSTEM] Critical error in detection main process: {e}")
 

@@ -165,8 +165,9 @@ def _draw_counters(
     y_offset = 30
     for line in counter.lines:
         lid = line["id"]
-        down_cnt = len(counter.counted_down_per_line.get(lid, set()))
-        up_cnt = len(counter.counted_up_per_line.get(lid, set()))
+        # Must not use len(counted_*_per_line[lid]): those sets evict retired track
+        # ids, so their size falls as traffic clears. line_totals() is monotonic.
+        down_cnt, up_cnt = counter.line_totals(lid)
         txt = f"{line['name']}: DOWN {down_cnt} | UP {up_cnt}"
         color = _hex_to_bgr(line.get("color", "#00d4ff"))
         cv2.putText(

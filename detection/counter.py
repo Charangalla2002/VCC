@@ -94,6 +94,15 @@ class LineCounter:
     _total_down: int = field(default=0, repr=False)
     _total_up:   int = field(default=0, repr=False)
 
+    # Monotonic per-line tallies for the on-screen overlay.
+    #
+    # The overlay used to render len(counted_down_per_line[lid]). Once those sets
+    # began evicting retired track ids (to bound memory and allow id reuse), that
+    # length started falling as traffic cleared -- the displayed count would tick
+    # downward toward zero. These tallies only ever increase.
+    _tally_down: dict[int, int] = field(default_factory=dict, repr=False)
+    _tally_up:   dict[int, int] = field(default_factory=dict, repr=False)
+
     def __post_init__(self):
         # If no lines list is provided, translate from counting_line / line_y
         if not self.lines:
@@ -128,6 +137,97 @@ class LineCounter:
                 self.counted_down_per_line[lid] = set()
             if lid not in self.counted_up_per_line:
                 self.counted_up_per_line[lid] = set()
+
+    def update_lines(self, new_lines: list[dict]) -> bool:
+        """
+        Swap in a new set of counting lines *without* disturbing tracker state.
+
+        Previously the only way to apply an edited counting line was to cancel and
+        respawn the whole camera task, which reloaded the YOLO model, reopened the
+        RTSP connection and discarded ``prev_centroids`` plus every dedup set. That
+        last part silently double-counted: any vehicle still in frame at the moment
+        of the edit had no record of having been counted, so it was counted again on
+        its next crossing.
+
+        This applies the change in place. ``prev_centroids`` and ``_frames_missing``
+        are untouched, so in-flight tracks keep their identity and their crossing
+        history. Dedup sets are preserved for surviving line ids and dropped only
+        for lines the user actually deleted.
+
+        Returns
+        -------
+        bool
+            True if the geometry differs from what is currently loaded.
+        """
+        # Compare only the fields that affect counting. Cosmetic edits (name, color)
+        # must not be treated as a change worth churning state for -- the old
+        # supervisor compared whole dicts, so recolouring a line restarted the video.
+        def _geometry(lines: list[dict]) -> dict:
+            return {
+                ln["id"]: (
+                    round(float(ln["x1"]), 9), round(float(ln["y1"]), 9),
+                    round(float(ln["x2"]), 9), round(float(ln["y2"]), 9),
+                    str(ln.get("direction", "both")),
+                    int(ln.get("lane_id", 1)),
+                )
+                for ln in lines
+            }
+
+        if not new_lines:
+            # Refuse to blank the geometry: an empty DB read (transient error, or a
+            # camera mid-edit with no lines saved yet) would otherwise silently stop
+            # all counting. Keep the last known-good configuration.
+            logger.warning(
+                "cam=%s update_lines called with no lines; keeping existing %d",
+                self.camera_id, len(self.lines),
+            )
+            return False
+
+        old_geom = _geometry(self.lines)
+        new_geom = _geometry(new_lines)
+
+        # Cosmetic-only edits: refresh the stored dicts so overlays repaint, but
+        # report "unchanged" so callers skip any expensive reaction.
+        if old_geom == new_geom:
+            self.lines = list(new_lines)
+            return False
+
+        surviving = set(new_geom) & set(old_geom)
+        # A line whose geometry moved is effectively a new line: a vehicle already
+        # counted against its old position has not crossed the new one, so its dedup
+        # entry must be cleared or it would never be counted at the new position.
+        moved = {lid for lid in surviving if old_geom[lid] != new_geom[lid]}
+
+        self.lines = list(new_lines)
+
+        for lid in list(self.counted_down_per_line):
+            if lid not in new_geom or lid in moved:
+                del self.counted_down_per_line[lid]
+        for lid in list(self.counted_up_per_line):
+            if lid not in new_geom or lid in moved:
+                del self.counted_up_per_line[lid]
+
+        for lid in new_geom:
+            self.counted_down_per_line.setdefault(lid, set())
+            self.counted_up_per_line.setdefault(lid, set())
+
+        # Drop display tallies for deleted lines only. A *moved* line keeps its
+        # tally so the on-screen number never jumps backward mid-session; its dedup
+        # set is still cleared above, so vehicles remain countable at the new spot.
+        for lid in list(self._tally_down):
+            if lid not in new_geom:
+                del self._tally_down[lid]
+        for lid in list(self._tally_up):
+            if lid not in new_geom:
+                del self._tally_up[lid]
+
+        logger.info(
+            "cam=%s counting lines updated in place: %d line(s), %d moved, "
+            "%d added, %d removed (tracker state preserved)",
+            self.camera_id, len(new_lines), len(moved),
+            len(set(new_geom) - set(old_geom)), len(set(old_geom) - set(new_geom)),
+        )
+        return True
 
     def process_tracks(
         self,
@@ -184,6 +284,7 @@ class LineCounter:
                         if crossed_down and line_dir != "up" and track_id not in self.counted_down_per_line[lid]:
                             if not self._counted_anywhere(self.counted_down_per_line, track_id):
                                 self._total_down += 1
+                            self._tally_down[lid] = self._tally_down.get(lid, 0) + 1
                             self.counted_down_per_line[lid].add(track_id)
                             events.append(CrossingEvent(
                                 track_id=track_id,
@@ -199,6 +300,7 @@ class LineCounter:
                         elif crossed_up and line_dir != "down" and track_id not in self.counted_up_per_line[lid]:
                             if not self._counted_anywhere(self.counted_up_per_line, track_id):
                                 self._total_up += 1
+                            self._tally_up[lid] = self._tally_up.get(lid, 0) + 1
                             self.counted_up_per_line[lid].add(track_id)
                             events.append(CrossingEvent(
                                 track_id=track_id,
@@ -284,6 +386,8 @@ class LineCounter:
         self._seen_this_frame.clear()
         self._total_down = 0
         self._total_up = 0
+        self._tally_down.clear()
+        self._tally_up.clear()
         self.counted_down_per_line.clear()
         self.counted_up_per_line.clear()
         for line in self.lines:
@@ -298,6 +402,10 @@ class LineCounter:
             if track_id in s:
                 return True
         return False
+
+    def line_totals(self, line_id: int) -> tuple[int, int]:
+        """Monotonic (down, up) counts for one line, safe for on-screen display."""
+        return self._tally_down.get(line_id, 0), self._tally_up.get(line_id, 0)
 
     @property
     def total_down(self) -> int:
