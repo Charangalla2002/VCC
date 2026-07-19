@@ -15,6 +15,7 @@ import Devices from './pages/Devices'
 import Users from './pages/Users'
 import AuditLogs from './pages/AuditLogs'
 import TrainingStudio from './pages/TrainingStudio'
+import VideoAnalysis from './pages/VideoAnalysis'
 import ChangePassword from './pages/ChangePassword'
 
 
@@ -94,6 +95,7 @@ export default function App() {
         <Route element={<ProtectedRoute />}>
           <Route path="/"           element={<Dashboard />} />
           <Route path="/live"       element={<LiveView />} />
+          <Route path="/videos"     element={<VideoAnalysis />} />
           <Route path="/analytics"  element={<Analytics />} />
           <Route path="/incidents"  element={<Incidents />} />
           <Route path="/settings"   element={<Settings />} />

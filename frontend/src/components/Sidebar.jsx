@@ -24,6 +24,7 @@ import {
   PieChart,
   Cpu,
   KeyRound,
+  FileVideo,
 } from 'lucide-react'
 import { getAccessToken, getUserRole } from '../lib/auth'
 
@@ -44,6 +45,7 @@ function getProfile() {
 const navItems = [
   { label: 'Dashboard',         path: '/',           icon: LayoutDashboard, exact: true },
   { label: 'Live View',         path: '/live',        icon: Video },
+  { label: 'Video Analysis',    path: '/videos',      icon: FileVideo },
   {
     label: 'Vehicle Analytics',
     path: '/analytics',
