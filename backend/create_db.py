@@ -1,33 +1,61 @@
+"""
+create_db.py - Create the application database if it does not exist yet.
+
+Dialect-aware:
+  * SQLite   - there is no server and no CREATE DATABASE; the file springs into
+               existence on first connect. We just make sure the parent directory
+               exists and report the path.
+  * Postgres - connect to the maintenance 'postgres' database and issue
+               CREATE DATABASE.
+"""
+import asyncio
 import os
 import sys
-import asyncpg
-import asyncio
+
 from dotenv import load_dotenv
-from urllib.parse import urlparse
+from sqlalchemy.engine import make_url
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from db_dialect import normalize_database_url, sqlite_file_path  # noqa: E402
+
 
 async def create_database():
-    # Load environment variables
     load_dotenv()
-    
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        print("Error: DATABASE_URL not found in .env")
-        sys.exit(1)
-        
-    # Parse the URL
-    # e.g. postgresql+asyncpg://postgres:password@localhost:5432/vcc_db
-    # We need to strip +asyncpg for urlparse to work correctly sometimes, but we can do it manually
-    url_no_driver = db_url.replace("+asyncpg", "")
-    parsed = urlparse(url_no_driver)
-    
-    db_name = parsed.path.lstrip('/')
-    user = parsed.username
-    password = parsed.password
-    host = parsed.hostname
-    port = parsed.port or 5432
-    
+
+    raw_url = os.getenv("DATABASE_URL")
+    if not raw_url:
+        print("Note: DATABASE_URL not set; falling back to the default SQLite database.")
+
+    db_url = normalize_database_url(raw_url)
+    url = make_url(db_url)
+
+    # ---- SQLite -----------------------------------------------------------
+    if url.get_backend_name() == "sqlite":
+        path = sqlite_file_path(db_url)
+        if path is None:
+            print("SQLite in-memory database selected - nothing to create.")
+            return
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path):
+            print(f"SQLite database already exists at {path}")
+        else:
+            # Touch it so the file is present with the expected permissions;
+            # the schema itself is created by the backend on startup.
+            open(path, "a").close()
+            print(f"SQLite database created at {path}")
+        return
+
+    # ---- PostgreSQL -------------------------------------------------------
+    import asyncpg
+
+    db_name = url.database
+    user = url.username
+    password = url.password
+    host = url.host
+    port = url.port or 5432
+
     print(f"Attempting to create database '{db_name}' at {host}:{port}...")
-    
+
     try:
         # Connect to the default 'postgres' database to create the new one
         conn = await asyncpg.connect(
@@ -37,20 +65,18 @@ async def create_database():
             port=port,
             database='postgres'
         )
-        
-        # Check if database exists
+
         exists = await conn.fetchval(
             "SELECT 1 FROM pg_database WHERE datname = $1", db_name
         )
-        
+
         if not exists:
-            # Create database
             print(f"Database '{db_name}' does not exist. Creating it now...")
             await conn.execute(f'CREATE DATABASE "{db_name}"')
             print(f"Database '{db_name}' created successfully!")
         else:
             print(f"Database '{db_name}' already exists.")
-            
+
         await conn.close()
     except asyncpg.exceptions.InvalidPasswordError:
         print("\n" + "="*60)

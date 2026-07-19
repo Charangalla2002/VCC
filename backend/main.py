@@ -3,7 +3,7 @@ main.py - FastAPI application entry point for the VCC backend.
 
 Startup sequence:
   1. Validate all required environment variables (raises RuntimeError if any missing).
-  2. Start APScheduler for materialized-view refresh.
+  2. Create tables + analytics views, then start APScheduler background jobs.
   3. Mount CORS, SlowAPI middleware, and all routers.
   4. Expose a WebSocket endpoint at /ws with first-message JWT auth.
 """
@@ -70,17 +70,41 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Auto-create tables (e.g. audit_logs and login_logs) on startup
     from database import engine
     from models import Base
-    from sqlalchemy import text
+    from sqlalchemy import Float, String, inspect, text
+    from db_dialect import UtcDateTime, create_analytics_views
+
+    # Columns added after the initial schema shipped. Declared with SQLAlchemy
+    # types rather than raw SQL so each dialect renders its own spelling -
+    # SQLite has no TIMESTAMP WITH TIME ZONE and rejects ADD COLUMN IF NOT
+    # EXISTS, so we inspect first and only add what is genuinely missing.
+    _CAMERA_UPGRADE_COLUMNS = (
+        ("latitude", Float()),
+        ("longitude", Float()),
+        ("last_seen_at", UtcDateTime()),
+        ("counting_line", String(255)),
+    )
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        try:
-            await conn.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS latitude FLOAT"))
-            await conn.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS longitude FLOAT"))
-            await conn.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP WITH TIME ZONE"))
-            await conn.execute(text("ALTER TABLE cameras ADD COLUMN IF NOT EXISTS counting_line VARCHAR(255)"))
-            logger.info("Database columns upgraded successfully.")
-        except Exception as e:
-            logger.warning("Could not execute alter table upgrade: %s", e)
+
+        # Schema shape is not optional: if this fails the app is broken, so it
+        # is deliberately NOT wrapped in a warn-and-continue handler.
+        existing = {
+            c["name"]
+            for c in await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_columns("cameras"))
+        }
+        dialect = conn.engine.dialect
+        for col_name, col_type in _CAMERA_UPGRADE_COLUMNS:
+            if col_name in existing:
+                continue
+            ddl_type = col_type.compile(dialect=dialect)
+            await conn.execute(text(f"ALTER TABLE cameras ADD COLUMN {col_name} {ddl_type}"))
+            logger.info("Added missing cameras.%s column (%s)", col_name, ddl_type)
+
+        # Analytics views (mv_*). Alembic is bypassed in practice - the real
+        # schema path is create_all + this block - so the views must be created
+        # here too, not only in the migration.
+        await create_analytics_views(conn)
 
         # Migrate old counting_line values to the new counting_lines table
         try:
@@ -140,10 +164,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await conn.execute(
                     text("INSERT INTO locations (id, name, latitude, longitude) VALUES (1, 'Default Junction', 12.9716, 77.5946)")
                 )
-                try:
-                    await conn.execute(text("SELECT setval('locations_id_seq', 1)"))
-                except Exception:
-                    pass
+                if dialect.name == "postgresql":
+                    # Keep the sequence in step with the explicit id we just
+                    # inserted. SQLite has no sequences; its rowid counter
+                    # already tracks MAX(id), so there is nothing to do.
+                    try:
+                        await conn.execute(text("SELECT setval('locations_id_seq', 1)"))
+                    except Exception:
+                        pass
                 logger.info("Seeded default location 'Default Junction' with ID 1")
         except Exception as e:
             logger.warning("Could not seed default location: %s", e)
@@ -168,7 +196,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     scheduler = create_scheduler()
     scheduler.start()
-    logger.info("APScheduler started (MV refresh every %s min)", os.getenv("MV_REFRESH_INTERVAL_MINUTES", "5"))
+    logger.info("APScheduler started (camera status, auto-capture, log cleanup).")
 
     yield  # Application runs here
 

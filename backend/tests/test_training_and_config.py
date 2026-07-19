@@ -4,7 +4,11 @@ import sys
 import asyncio
 
 # Seed Env variables before imports
-os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@127.0.0.1:5433/vcc_db")
+# Default to a throwaway SQLite file so the suite runs with no database server.
+# Export DATABASE_URL before running pytest to test against PostgreSQL instead.
+import tempfile
+_TEST_DB_FILE = os.path.join(tempfile.gettempdir(), "vcc_test_training.db")
+os.environ.setdefault("DATABASE_URL", f"sqlite+aiosqlite:///{_TEST_DB_FILE}")
 os.environ.setdefault("JWT_SECRET", "test-secret-that-is-long-enough-for-hs256-algorithm-padding-ok")
 os.environ.setdefault("JWT_ALGORITHM", "HS256")
 os.environ.setdefault("SERVICE_API_KEY", "test-api-key-that-is-long-enough-32chars!")
@@ -20,8 +24,11 @@ from main import app
 from training_app import app as training_app
 from models import User, UserRole
 
+from db_dialect import create_engine_from_url
+
 TEST_DATABASE_URL = os.environ["DATABASE_URL"]
-test_engine = create_async_engine(TEST_DATABASE_URL, echo=False, pool_pre_ping=True)
+# Same builder the app uses -> identical dialect handling and SQLite PRAGMAs.
+test_engine = create_engine_from_url(TEST_DATABASE_URL)
 TestSessionLocal = async_sessionmaker(bind=test_engine, class_=AsyncSession, expire_on_commit=False)
 
 @pytest_asyncio.fixture(autouse=True)
@@ -59,6 +66,13 @@ async def client() -> AsyncClient:
         async with TestSessionLocal() as session:
             yield session
     app.dependency_overrides[get_db] = override_get_db
+
+    # The SlowAPI limiter is in-process module state shared by every test module.
+    # test_analytics deliberately exhausts the login limit, so without this reset
+    # these tests fail with 429 when the whole suite runs in one process.
+    if getattr(getattr(app.state, "limiter", None), "_storage", None):
+        app.state.limiter._storage.reset()
+
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
     app.dependency_overrides.clear()

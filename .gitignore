@@ -35,6 +35,13 @@ backend/training_data/
 runs/
 uploads/
 
+# --- Local SQLite database (default DATABASE_URL) + WAL sidecars ---
+vcc.db
+vcc.db-wal
+vcc.db-shm
+*.sqlite
+*.sqlite3
+
 # --- OS / editor ---
 .DS_Store
 Thumbs.db
@@ -42,3 +49,8 @@ Thumbs.db
 .idea/
 .vscode/
 .venv-test/
+.venv-run/
+samples/
+vcc*.db
+vcc*.db-wal
+vcc*.db-shm

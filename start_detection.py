@@ -1,15 +1,23 @@
 import asyncio
-import sys
-import asyncpg
-from dotenv import load_dotenv
 import os
+import sys
 
-# Load backend/.env to get DATABASE_URL
-load_dotenv("backend/.env")
+from dotenv import load_dotenv
+from sqlalchemy import text
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-if DATABASE_URL and DATABASE_URL.startswith("postgresql+asyncpg://"):
-    DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgres://")
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+# Load backend/.env to get DATABASE_URL. Anchored at this file rather than the
+# cwd so the path holds no matter where the process is launched from.
+load_dotenv(os.path.join(_REPO_ROOT, "backend", ".env"))
+
+# db_dialect owns every PostgreSQL/SQLite difference, including resolving a
+# relative sqlite:// path to an absolute one. Sharing it with the backend is what
+# guarantees both processes open the same database file.
+sys.path.append(os.path.join(_REPO_ROOT, "backend"))
+from db_dialect import create_engine_from_url, normalize_database_url  # noqa: E402
+
+DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL"))
 
 sys.path.append('detection')
 import config
@@ -17,30 +25,47 @@ from tracker import run_camera
 from counter import LineCounter
 from streamer import start_server
 
-async def fetch_cameras():
-    try:
-        conn = await asyncpg.connect(DATABASE_URL)
-        
-        # Fetch counting lines
-        lines_rows = await conn.fetch(
-            "SELECT id, camera_id, name, x1, y1, x2, y2, lane_id, direction, color FROM counting_lines"
-        )
-        cam_lines_map = {}
-        for lr in lines_rows:
-            cid = str(lr["camera_id"])
-            if cid not in cam_lines_map:
-                cam_lines_map[cid] = []
-            cam_lines_map[cid].append({
-                "id": lr["id"],
-                "name": lr["name"],
-                "x1": lr["x1"], "y1": lr["y1"], "x2": lr["x2"], "y2": lr["y2"],
-                "lane_id": lr["lane_id"],
-                "direction": lr["direction"],
-                "color": lr["color"]
-            })
+# One engine for the process lifetime; the old code opened a fresh connection on
+# every 5-second poll.
+_engine = None
 
-        # Fetch cameras
-        rows = await conn.fetch("SELECT id, name, rtsp_url, location_id, counting_line FROM cameras")
+
+def _get_engine():
+    global _engine
+    if _engine is None:
+        _engine = create_engine_from_url(DATABASE_URL)
+    return _engine
+
+
+async def fetch_cameras():
+    """Read cameras + their counting lines. Works on PostgreSQL and SQLite alike."""
+    try:
+        async with _get_engine().connect() as conn:
+            # Fetch counting lines
+            lines_rows = (await conn.execute(text(
+                "SELECT id, camera_id, name, x1, y1, x2, y2, lane_id, direction, color "
+                "FROM counting_lines"
+            ))).mappings().all()
+
+            cam_lines_map = {}
+            for lr in lines_rows:
+                cid = str(lr["camera_id"])
+                if cid not in cam_lines_map:
+                    cam_lines_map[cid] = []
+                cam_lines_map[cid].append({
+                    "id": lr["id"],
+                    "name": lr["name"],
+                    "x1": lr["x1"], "y1": lr["y1"], "x2": lr["x2"], "y2": lr["y2"],
+                    "lane_id": lr["lane_id"],
+                    "direction": lr["direction"],
+                    "color": lr["color"]
+                })
+
+            # Fetch cameras
+            rows = (await conn.execute(text(
+                "SELECT id, name, rtsp_url, location_id, counting_line FROM cameras"
+            ))).mappings().all()
+
         cams = []
         for r in rows:
             url = r["rtsp_url"]
@@ -58,7 +83,6 @@ async def fetch_cameras():
                 "counting_line": r["counting_line"],
                 "counting_lines": cam_lines_map.get(cid_str, [])
             })
-        await conn.close()
         return cams
     except Exception as e:
         print(f"[SYSTEM] Database error fetching cameras: {e}")

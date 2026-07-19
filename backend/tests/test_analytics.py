@@ -22,6 +22,7 @@ from __future__ import annotations
 import sys
 import asyncio
 import os
+import tempfile
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -38,7 +39,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # Environment bootstrap (must be set BEFORE importing app modules)
 # ---------------------------------------------------------------------------
 
-os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@127.0.0.1:5433/vcc_db")
+# Default to a throwaway SQLite file so the suite runs with no database server.
+# Export DATABASE_URL before running pytest to test against PostgreSQL instead.
+_TEST_DB_FILE = os.path.join(tempfile.gettempdir(), "vcc_test_analytics.db")
+os.environ.setdefault("DATABASE_URL", f"sqlite+aiosqlite:///{_TEST_DB_FILE}")
 os.environ.setdefault("JWT_SECRET", "test-secret-that-is-long-enough-for-hs256-algorithm-padding-ok")
 os.environ.setdefault("JWT_ALGORITHM", "HS256")
 os.environ.setdefault("ACCESS_TOKEN_EXPIRE_MINUTES", "15")
@@ -58,9 +62,13 @@ from models import Alert, Camera, Event, Location, User  # noqa: E402
 # Test database engine & session
 # ---------------------------------------------------------------------------
 
+from db_dialect import create_analytics_views, create_engine_from_url  # noqa: E402
+
 TEST_DATABASE_URL: str = os.environ["DATABASE_URL"]
 
-test_engine = create_async_engine(TEST_DATABASE_URL, echo=False, pool_pre_ping=True)
+# Same builder the app uses, so the test engine gets the identical dialect
+# handling (and, on SQLite, the WAL / busy_timeout / foreign_keys PRAGMAs).
+test_engine = create_engine_from_url(TEST_DATABASE_URL)
 TestSessionLocal = async_sessionmaker(
     bind=test_engine, class_=AsyncSession, expire_on_commit=False
 )
@@ -83,43 +91,8 @@ async def setup_database():
     """Create all tables and seed test data once per session."""
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
-        # Create materialized views for scheduler test
-        for stmt in [
-            """
-            CREATE MATERIALIZED VIEW IF NOT EXISTS mv_hourly_counts AS
-            SELECT location_id, vehicle_class,
-                   date_trunc('hour', timestamp) AS hour,
-                   COUNT(*) AS total_count
-            FROM events
-            GROUP BY location_id, vehicle_class, date_trunc('hour', timestamp)
-            WITH NO DATA
-            """,
-            """
-            CREATE MATERIALIZED VIEW IF NOT EXISTS mv_daily_totals AS
-            SELECT vehicle_class,
-                   date_trunc('day', timestamp)::date AS day,
-                   COUNT(*) AS total_count
-            FROM events
-            GROUP BY vehicle_class, date_trunc('day', timestamp)::date
-            WITH NO DATA
-            """,
-            """
-            CREATE MATERIALIZED VIEW IF NOT EXISTS mv_lane_counts AS
-            SELECT camera_id, lane_id, vehicle_class,
-                   COUNT(*) AS total_count
-            FROM events
-            GROUP BY camera_id, lane_id, vehicle_class
-            WITH NO DATA
-            """,
-            "CREATE UNIQUE INDEX IF NOT EXISTS uix_mv_hourly_counts ON mv_hourly_counts (location_id, vehicle_class, hour)",
-            "CREATE UNIQUE INDEX IF NOT EXISTS uix_mv_daily_totals ON mv_daily_totals (vehicle_class, day)",
-            "CREATE UNIQUE INDEX IF NOT EXISTS uix_mv_lane_counts ON mv_lane_counts (camera_id, lane_id, vehicle_class)",
-        ]:
-            try:
-                await conn.execute(text(stmt))
-            except Exception:
-                pass
+        # Same dialect-aware view DDL the application runs at startup.
+        await create_analytics_views(conn)
 
     # Clean up stale test data from previous runs if any
     async with TestSessionLocal() as session:
@@ -437,12 +410,70 @@ async def test_ws_no_auth_timeout_1008(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_matview_refresh_no_transaction_error(db_session: AsyncSession) -> None:
     """
-    REFRESH MATERIALIZED VIEW CONCURRENTLY must succeed without a
-    'cannot run inside a transaction block' error.
+    scheduler.refresh_materialized_views() must succeed on either dialect.
 
-    This verifies the AUTOCOMMIT isolation pattern in scheduler.py.
+    The mv_* objects are now PLAIN views on both PostgreSQL and SQLite, so there
+    is nothing to REFRESH and the old 'cannot run inside a transaction block'
+    hazard is gone entirely. The call still reads every view, so this asserts the
+    views exist and are queryable.
     """
     from scheduler import refresh_materialized_views
 
     # Should complete without raising an exception
     await refresh_materialized_views()
+
+
+@pytest.mark.asyncio
+async def test_date_trunc_hour_day_week_agree(db_session: AsyncSession) -> None:
+    """date_trunc() must truncate identically in shape on PostgreSQL and SQLite.
+
+    Asserts the properties that make the two implementations interchangeable:
+      * every bucket is a datetime at exactly midnight-or-on-the-hour,
+      * hour buckets zero out minutes/seconds, day buckets also zero the hour,
+      * week buckets land on a MONDAY (PostgreSQL date_trunc('week') semantics,
+        reproduced on SQLite via strftime(..., 'weekday 0', '-6 days')),
+      * the same events are counted regardless of bucket size.
+    """
+    from db_dialect import date_trunc
+    from sqlalchemy import func, select as sa_select
+
+    totals = {}
+    for interval in ("hour", "day", "week"):
+        bucket = date_trunc(interval, Event.timestamp)
+        rows = (
+            await db_session.execute(
+                sa_select(bucket.label("ts"), func.count(Event.id).label("cnt"))
+                .group_by(bucket)
+                .order_by(bucket)
+            )
+        ).all()
+
+        assert rows, f"no {interval} buckets returned"
+        for ts, _cnt in rows:
+            assert isinstance(ts, datetime), f"{interval} bucket is {type(ts)}, not datetime"
+            assert ts.minute == 0 and ts.second == 0 and ts.microsecond == 0
+            if interval in ("day", "week"):
+                assert ts.hour == 0, f"{interval} bucket not truncated to midnight: {ts}"
+            if interval == "week":
+                assert ts.weekday() == 0, f"week bucket {ts} is not a Monday"
+
+        totals[interval] = sum(c for _, c in rows)
+
+    # Bucket size changes the grouping, never the number of events counted.
+    assert totals["hour"] == totals["day"] == totals["week"]
+
+
+@pytest.mark.asyncio
+async def test_timeseries_all_intervals(client: AsyncClient, auth_headers: dict) -> None:
+    """The /timeseries endpoint must work for every supported interval."""
+    for interval in ("hour", "day", "week"):
+        resp = await client.get(
+            "/api/analytics/timeseries",
+            headers=auth_headers,
+            params={"interval": interval},
+        )
+        assert resp.status_code == 200, f"{interval}: {resp.text}"
+        points = resp.json()
+        assert isinstance(points, list)
+        for p in points:
+            assert "ts" in p and "count" in p

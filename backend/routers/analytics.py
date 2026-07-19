@@ -22,6 +22,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import require_bearer_token
 from database import get_db
+# date_trunc is dialect-dispatched (native on PostgreSQL, strftime on SQLite);
+# importing it registers the compiler hooks that func.date_trunc(...) resolves to.
+from db_dialect import date_trunc, mv_hourly_counts
 from models import Event, Location
 from schemas import (
     AnalyticsSummary,
@@ -238,21 +241,23 @@ async def get_hourly_heatmap(
     today_start = _today_utc()
     since = today_start - timedelta(days=days - 1)
 
-    # 1. Query materialized view for historical days [since, today_start)
+    # 1. Query the mv_hourly_counts view for historical days [since, today_start).
+    # Selected through a typed Table rather than raw text() so the datetime bind
+    # params and the returned `hour` column are converted by the dialect - on
+    # SQLite the view stores its bucket as a formatted string, and untyped SQL
+    # would compare and return it as one.
     historical_cells = []
     try:
-        sql = (
-            "SELECT location_id, vehicle_class, hour, total_count "
-            "FROM mv_hourly_counts "
-            "WHERE hour >= :since AND hour < :today_start"
+        v = mv_hourly_counts.c
+        stmt = (
+            select(v.location_id, v.vehicle_class, v.hour, v.total_count)
+            .where(v.hour >= since, v.hour < today_start)
+            .order_by(v.hour, v.location_id, v.vehicle_class)
         )
-        params: dict = {"since": since, "today_start": today_start}
         if location_id is not None:
-            sql += " AND location_id = :lid"
-            params["lid"] = location_id
-        sql += " ORDER BY hour, location_id, vehicle_class"
+            stmt = stmt.where(v.location_id == location_id)
 
-        rows = await db.execute(text(sql), params)
+        rows = await db.execute(stmt)
         results = rows.fetchall()
         for r in results:
             historical_cells.append(
@@ -266,15 +271,16 @@ async def get_hourly_heatmap(
     except Exception:
         await db.rollback()
         # Fallback for historical range (raw events query)
+        hour_bucket = date_trunc("hour", Event.timestamp)
         q = (
             select(
                 Event.location_id,
                 Event.vehicle_class,
-                literal_column("date_trunc('hour', timestamp)").label("hour"),
+                hour_bucket.label("hour"),
                 func.count(Event.id).label("cnt"),
             )
             .where(Event.timestamp >= since, Event.timestamp < today_start)
-            .group_by(Event.location_id, Event.vehicle_class, literal_column("date_trunc('hour', timestamp)"))
+            .group_by(Event.location_id, Event.vehicle_class, hour_bucket)
         )
         if location_id is not None:
             q = q.where(Event.location_id == location_id)
@@ -291,15 +297,16 @@ async def get_hourly_heatmap(
 
     # 2. Query raw events for today [today_start, tomorrow)
     live_cells = []
+    live_hour_bucket = date_trunc("hour", Event.timestamp)
     q_live = (
         select(
             Event.location_id,
             Event.vehicle_class,
-            literal_column("date_trunc('hour', timestamp)").label("hour"),
+            live_hour_bucket.label("hour"),
             func.count(Event.id).label("cnt"),
         )
         .where(Event.timestamp >= today_start)
-        .group_by(Event.location_id, Event.vehicle_class, literal_column("date_trunc('hour', timestamp)"))
+        .group_by(Event.location_id, Event.vehicle_class, live_hour_bucket)
     )
     if location_id is not None:
         q_live = q_live.where(Event.location_id == location_id)
@@ -427,7 +434,8 @@ async def get_timeseries(
         )
 
     from sqlalchemy import case
-    trunc_expr = func.date_trunc(interval, Event.timestamp).label("ts")
+    # date_trunc() here is the dialect-aware version from db_dialect.
+    trunc_expr = date_trunc(interval, Event.timestamp).label("ts")
 
     q = (
         select(

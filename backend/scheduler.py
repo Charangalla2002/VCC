@@ -1,9 +1,11 @@
 """
-scheduler.py - APScheduler AsyncIOScheduler for materialized view refresh.
+scheduler.py - APScheduler AsyncIOScheduler for periodic background jobs.
 
-CRITICAL: REFRESH MATERIALIZED VIEW CONCURRENTLY cannot run inside a
-transaction. We use engine.connect() + execution_options(isolation_level='AUTOCOMMIT')
-to ensure each REFRESH statement is executed outside of any transaction block.
+The mv_* analytics views used to be PostgreSQL MATERIALIZED VIEWs refreshed here
+on a timer. They are now PLAIN VIEWS on both PostgreSQL and SQLite (see
+db_dialect.py), which are always current, so there is nothing left to refresh -
+the refresh job has been removed and refresh_materialized_views() is a no-op kept
+only so existing callers and tests keep working.
 """
 from __future__ import annotations
 
@@ -14,35 +16,30 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import text
 
 from database import engine
+from db_dialect import VIEW_NAMES
 
 logger = logging.getLogger(__name__)
 
+# Retained for backwards compatibility with existing .env files. No longer
+# drives a job: the analytics views are plain views and never need refreshing.
 MV_REFRESH_INTERVAL_MINUTES: int = int(
     os.getenv("MV_REFRESH_INTERVAL_MINUTES", "5")
 )
 
-MATERIALIZED_VIEWS = (
-    "mv_hourly_counts",
-    "mv_daily_totals",
-    "mv_lane_counts",
-)
+MATERIALIZED_VIEWS = VIEW_NAMES
 
 
 async def refresh_materialized_views() -> None:
-    """Refresh all VCC materialized views concurrently.
+    """No-op: the mv_* views are plain views and are always up to date.
 
-    Uses AUTOCOMMIT isolation so that REFRESH MATERIALIZED VIEW CONCURRENTLY
-    is not wrapped in an implicit transaction (which PostgreSQL forbids).
+    Kept as a stable entry point. It verifies the views are actually readable so
+    that calling it still exercises something meaningful rather than silently
+    doing nothing.
     """
-    logger.info("Refreshing materialized views...")
     async with engine.connect() as conn:
-        # Must be set BEFORE executing any statements on this connection
-        await conn.execution_options(isolation_level="AUTOCOMMIT")
-        for mv in ["mv_daily_totals", "mv_lane_counts", "mv_hourly_counts"]:
-            stmt = text(f"REFRESH MATERIALIZED VIEW {mv}")
-            await conn.execute(stmt)
-            logger.debug("Refreshed %s", mv)
-    logger.info("Materialized view refresh complete.")
+        for view in VIEW_NAMES:
+            await conn.execute(text(f"SELECT 1 FROM {view} LIMIT 1"))
+    logger.debug("Analytics views are plain views - nothing to refresh.")
 
 async def check_camera_status() -> None:
     """Mark cameras inactive if they haven't sent events in 2 minutes."""
@@ -146,14 +143,7 @@ async def clean_old_logs() -> None:
 def create_scheduler() -> AsyncIOScheduler:
     """Build and return a configured AsyncIOScheduler (not yet started)."""
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(
-        refresh_materialized_views,
-        trigger="interval",
-        minutes=MV_REFRESH_INTERVAL_MINUTES,
-        id="mv_refresh",
-        replace_existing=True,
-        max_instances=1,  # prevent overlapping runs
-    )
+    # No mv_refresh job: the analytics views are plain views and never go stale.
     scheduler.add_job(
         check_camera_status,
         trigger="interval",

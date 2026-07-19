@@ -10,9 +10,10 @@ from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+
+from db_dialect import create_engine_from_url, normalize_database_url
 
 load_dotenv()
 
@@ -20,15 +21,14 @@ load_dotenv()
 # Engine
 # ---------------------------------------------------------------------------
 
-DATABASE_URL: str = os.environ["DATABASE_URL"]  # raised at import if missing
+# The dialect is chosen purely from DATABASE_URL. It defaults to a SQLite file at
+# the repo root so the app runs on a bare laptop; point it at postgresql://... and
+# everything switches over. normalize_database_url() also makes a relative SQLite
+# path absolute, so the backend (cwd=backend/) and the detection process
+# (cwd=repo root) resolve to the same file.
+DATABASE_URL: str = normalize_database_url(os.getenv("DATABASE_URL"))
 
-engine = create_async_engine(
-    DATABASE_URL,
-    echo=False,          # flip to True locally if you need SQL traces
-    pool_pre_ping=True,  # detect stale connections automatically
-    pool_size=10,
-    max_overflow=20,
-)
+engine = create_engine_from_url(DATABASE_URL)
 
 # ---------------------------------------------------------------------------
 # Session factory
