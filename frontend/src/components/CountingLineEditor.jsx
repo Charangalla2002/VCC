@@ -16,6 +16,59 @@ export default function CountingLineEditor({ camera, onClose, onSaved }) {
   const [streamError, setStreamError] = useState(false)
   const [saving, setSaving] = useState(false)
   const containerRef = useRef(null)
+  const imgRef = useRef(null)
+
+  // Rect of the *rendered* video frame inside the container, in container-local px.
+  //
+  // The container is a fixed 16:9 box but the stream is drawn with `object-contain`,
+  // so any camera whose aspect ratio is not 16:9 gets letterboxed. Measuring clicks
+  // against the container would then bake a constant offset/scale error into every
+  // saved coordinate -- and because the SVG overlay used the same wrong box, the
+  // error was invisible here and only showed up as a misplaced line in detection.
+  // Both the pointer math and the SVG viewport are anchored to this rect instead.
+  const [frameRect, setFrameRect] = useState(null)
+
+  const measureFrame = useCallback(() => {
+    const container = containerRef.current
+    const img = imgRef.current
+    if (!container) return
+    const cw = container.clientWidth
+    const ch = container.clientHeight
+    if (!cw || !ch) return
+
+    const nw = img?.naturalWidth || 0
+    const nh = img?.naturalHeight || 0
+
+    // Before the first frame arrives (or when the stream is offline) there is no
+    // frame to align to, so fall back to the full container.
+    if (!nw || !nh) {
+      setFrameRect({ left: 0, top: 0, width: cw, height: ch })
+      return
+    }
+
+    // Replicate CSS `object-contain`: scale to fit, then centre.
+    const scale = Math.min(cw / nw, ch / nh)
+    const width = nw * scale
+    const height = nh * scale
+    setFrameRect({
+      left: (cw - width) / 2,
+      top: (ch - height) / 2,
+      width,
+      height,
+    })
+  }, [])
+
+  useEffect(() => {
+    measureFrame()
+    const container = containerRef.current
+    if (!container || typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measureFrame)
+      return () => window.removeEventListener('resize', measureFrame)
+    }
+    const ro = new ResizeObserver(measureFrame)
+    ro.observe(container)
+    return () => ro.disconnect()
+  }, [measureFrame, streamError])
 
   // Load existing lines
   useEffect(() => {
@@ -32,14 +85,30 @@ export default function CountingLineEditor({ camera, onClose, onSaved }) {
     fetchLines()
   }, [camera.id])
 
+  // Pointer position -> coordinates normalized to the video frame (0-1).
+  //
+  // These normalized values are the contract shared with the backend
+  // (schemas.py: ge=0.0, le=1.0) and the detector, which multiplies them by the
+  // true frame dimensions (counter.py: `line["x1"] * frame_w`). So they must be
+  // relative to the *frame*, not to the letterboxed container that displays it.
   const getRelativeCoords = useCallback((e) => {
     const rect = containerRef.current?.getBoundingClientRect()
     if (!rect) return { x: 0, y: 0 }
+
+    const frame = frameRect || { left: 0, top: 0, width: rect.width, height: rect.height }
+    if (!frame.width || !frame.height) return { x: 0, y: 0 }
+
+    // clientX/Y -> container-local px -> frame-local px -> normalized.
+    const localX = e.clientX - rect.left - frame.left
+    const localY = e.clientY - rect.top - frame.top
+
+    // Clamping keeps a drag into the letterbox bars pinned to the frame edge
+    // rather than producing an out-of-range coordinate the backend would reject.
     return {
-      x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
-      y: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
+      x: Math.max(0, Math.min(1, localX / frame.width)),
+      y: Math.max(0, Math.min(1, localY / frame.height)),
     }
-  }, [])
+  }, [frameRect])
 
   const handleMouseDown = (e) => {
     if (draggingEndpoint) return
@@ -210,9 +279,11 @@ export default function CountingLineEditor({ camera, onClose, onSaved }) {
         >
           {!streamError ? (
             <img
+              ref={imgRef}
               src={`${STREAM_BASE}/stream/${camera.id}`}
               alt="live stream"
               className="w-full h-full object-contain pointer-events-none block"
+              onLoad={measureFrame}
               onError={() => setStreamError(true)}
             />
           ) : (
@@ -222,8 +293,21 @@ export default function CountingLineEditor({ camera, onClose, onSaved }) {
             </div>
           )}
 
-          {/* SVG Drawing Layer */}
-          <svg className="absolute inset-0 w-full h-full" style={{ pointerEvents: 'none' }}>
+          {/* SVG Drawing Layer.
+              Positioned to cover exactly the rendered frame (not the container), so
+              the `%`-based child coordinates below resolve against the same space the
+              detector uses. Anchoring this to `inset-0` is what made the letterbox
+              offset invisible during editing. */}
+          <svg
+            className="absolute"
+            style={{
+              pointerEvents: 'none',
+              left: frameRect ? `${frameRect.left}px` : 0,
+              top: frameRect ? `${frameRect.top}px` : 0,
+              width: frameRect ? `${frameRect.width}px` : '100%',
+              height: frameRect ? `${frameRect.height}px` : '100%',
+            }}
+          >
             {/* Existing lines */}
             {lines.map((line, idx) => (
               <g key={line.id || line._tempId || idx}>
