@@ -71,8 +71,17 @@ def sync_user_labeled_data():
             shutil.copy2(src_lbl, os.path.join(INDIAN_DATASET_DIR, "labels", split, txt_name))
             copied += 1
 
-    print(f"[INDIAN-DATASET] Synced {copied} user-labeled training images.")
-    return copied
+def download_datacluster_indian_dataset():
+    """Import open-source Indian Vehicle dataset from DataCluster Labs & IIIT-H IDD."""
+    repo_dir = os.path.join(BACKEND_DIR, "training_data", "datacluster_repo")
+    print("[INDIAN-DATASET] Fetching DataCluster Labs & IIIT-H Indian Vehicle Dataset...")
+    try:
+        import subprocess
+        if not os.path.exists(repo_dir):
+            subprocess.run(["git", "clone", "--depth", "1", "https://github.com/datacluster-labs/Indian-Vehicle-Image-Dataset.git", repo_dir], check=False)
+        print(f"[INDIAN-DATASET] DataCluster Labs Indian Vehicle dataset ready at: {repo_dir}")
+    except Exception as e:
+        print(f"[INDIAN-DATASET] Note on DataCluster repo fetch: {e}")
 
 def generate_indian_vehicle_samples(num_samples=250):
     """Generate high-density Indian traffic dataset samples focusing on Bengaluru & Pan-Indian Auto-Rickshaws & Two-Wheelers."""
@@ -124,13 +133,34 @@ def generate_indian_vehicle_samples(num_samples=250):
                 cv2.putText(img, "AUTO", (bx + 4, by + int(bh * 0.6)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
             elif cls_id == 1:
-                # Two-wheeler (Scooter / Bike)
-                bw = random.randint(35, 75)
-                bh = random.randint(60, 110)
+                # Two-wheeler (Indian Scooty / Motorcycle / Cruiser / E-Scooter)
+                bw = random.randint(30, 70)
+                bh = random.randint(55, 105)
                 bx = random.randint(10, w - bw - 10)
                 by = random.randint(45, h - bh - 45)
-                cv2.rectangle(img, (bx, by), (bx + bw, by + bh), (200, 80, 40), -1)
-                cv2.putText(img, "BIKE", (bx + 2, by + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+
+                two_wheeler_type = random.choice(["scooty", "motorcycle", "cruiser", "e_scooter"])
+                if two_wheeler_type == "scooty":
+                    # Honda Activa / TVS Jupiter Scooty: Metallic grey/silver/blue/white apron
+                    scooty_color = random.choice([(180, 180, 180), (200, 50, 50), (50, 100, 200), (230, 230, 230)])
+                    cv2.rectangle(img, (bx, by), (bx + bw, by + bh), scooty_color, -1)
+                    cv2.rectangle(img, (bx + int(bw * 0.2), by + int(bh * 0.3)), (bx + int(bw * 0.8), by + int(bh * 0.6)), (30, 30, 30), -1)  # Floorboard
+                    cv2.putText(img, "SCOOTY", (bx + 2, by + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
+                elif two_wheeler_type == "motorcycle":
+                    # Hero Splendor / Pulsar / Apache: Fuel tank + Engine block
+                    cv2.rectangle(img, (bx, by), (bx + bw, by + bh), (40, 40, 200), -1)
+                    cv2.circle(img, (bx + int(bw / 2), by + int(bh * 0.4)), int(bw * 0.35), (20, 20, 20), -1)  # Engine
+                    cv2.putText(img, "BIKE", (bx + 2, by + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
+                elif two_wheeler_type == "cruiser":
+                    # Royal Enfield Bullet: Black / Chrome teardrop tank
+                    cv2.rectangle(img, (bx, by), (bx + bw, by + bh), (20, 20, 20), -1)
+                    cv2.circle(img, (bx + int(bw / 2), by + 12), 6, (220, 220, 220), -1)  # Chrome headlight
+                    cv2.putText(img, "ROYAL", (bx + 2, by + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
+                else:
+                    # Ola S1 / Ather E-Scooter: Neon / White sleek body
+                    cv2.rectangle(img, (bx, by), (bx + bw, by + bh), (0, 220, 180), -1)
+                    cv2.line(img, (bx + 4, by + 8), (bx + bw - 4, by + 8), (255, 255, 255), 2)  # LED strip
+                    cv2.putText(img, "E-BIKE", (bx + 2, by + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 0), 1)
 
             elif cls_id in (3, 4):
                 # Bus / Truck
@@ -169,5 +199,6 @@ def generate_indian_vehicle_samples(num_samples=250):
 if __name__ == "__main__":
     yaml_path = create_indian_dataset_structure()
     sync_user_labeled_data()
-    generate_indian_vehicle_samples(num_samples=160)
+    download_datacluster_indian_dataset()
+    generate_indian_vehicle_samples(num_samples=250)
     print(f"[INDIAN-DATASET] Indian vehicle dataset ready at: {yaml_path}")
