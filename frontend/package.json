@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:training": "vite --config vite.training.config.js",
     "build": "vite build",
     "preview": "vite preview"
   },

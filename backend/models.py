@@ -171,6 +171,7 @@ class Event(Base):
     location_id = Column(Integer, ForeignKey("locations.id", ondelete="CASCADE"), nullable=False)
     lane_id = Column(Integer, nullable=False)
     vehicle_class = Column(String(32), nullable=False)
+    vehicle_color = Column(String(32), nullable=True, default="Unknown")
     confidence = Column(Float, nullable=False)
     crossing_dir = Column(String(8), nullable=False, default=CrossingDir.in_.value)
     timestamp = Column(UtcDateTime, nullable=False, server_default=func.now())

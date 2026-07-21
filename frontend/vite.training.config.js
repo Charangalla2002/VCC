@@ -2,10 +2,23 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      name: 'serve-training-html-at-root',
+      configureServer(server) {
+        server.middlewares.use((req, res, next) => {
+          if (req.url === '/' || req.url === '/index.html') {
+            req.url = '/training.html'
+          }
+          next()
+        })
+      }
+    }
+  ],
   server: {
     host: '0.0.0.0',
-    port: 5173,
+    port: 5174,
     proxy: {
       '/api': {
         target: process.env.VITE_API_URL || 'http://localhost:8000',
@@ -26,19 +39,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: 'dist',
+    outDir: 'dist-training',
     sourcemap: true,
-    rollupOptions: {
-      input: {
-        main: 'index.html',
-        training: 'training.html',
-      },
-      output: {
-        manualChunks: {
-          vendor: ['react', 'react-dom', 'react-router-dom'],
-          charts: ['recharts'],
-        },
-      },
-    },
   },
 })

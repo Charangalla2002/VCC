@@ -117,11 +117,15 @@ VEHICLE_CLASS_MAP: dict[int, str] = {
 # ---------------------------------------------------------------------------
 
 DASHBOARD_CATEGORY: dict[str, str] = {
-    "bicycle":    "Non-Motorised",
-    "car":        "Light Vehicle",
-    "motorcycle": "Two-Wheeler",
-    "bus":        "Heavy Vehicle",
-    "truck":      "Heavy Vehicle",
+    "bicycle":        "Non-Motorised",
+    "car":            "Light Vehicle",
+    "motorcycle":     "Two-Wheeler",
+    "bus":            "Heavy Vehicle",
+    "truck":          "Heavy Vehicle",
+    "auto_rickshaw":  "Three-Wheeler",
+    "autorickshaw":   "Three-Wheeler",
+    "three_wheeler":  "Three-Wheeler",
+    "auto":           "Three-Wheeler",
 }
 """Maps raw vehicle class labels to high-level dashboard display categories."""
 

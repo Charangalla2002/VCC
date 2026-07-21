@@ -34,6 +34,7 @@ load_dotenv()                          # load .env before importing config
 import config
 from counter import CrossingEvent, LineCounter, create_counters_from_config
 from gst_capture import GStreamerCapture, GST_AVAILABLE, gst_version_string
+from color_detector import detect_vehicle_color
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -45,6 +46,30 @@ logging.basicConfig(
 # ---------------------------------------------------------------------------
 # Model loader
 # ---------------------------------------------------------------------------
+
+def sync_model_classes(model: Any) -> None:
+    """Dynamically sync config.VEHICLE_CLASS_MAP with loaded model names."""
+    if hasattr(model, "names") and isinstance(model.names, dict):
+        new_map = {}
+        for cls_id, name in model.names.items():
+            name_str = str(name).lower()
+            if any(k in name_str for k in ["auto", "rickshaw", "tuk", "three", "autorickshaw", "auto_rickshaw", "auto-rickshaw"]):
+                new_map[cls_id] = "auto_rickshaw"
+            elif any(k in name_str for k in ["motorcycle", "motorbike", "bike", "scooter"]):
+                new_map[cls_id] = "motorcycle"
+            elif any(k in name_str for k in ["car", "automobile"]):
+                new_map[cls_id] = "car"
+            elif "bus" in name_str:
+                new_map[cls_id] = "bus"
+            elif "truck" in name_str:
+                new_map[cls_id] = "truck"
+            elif "bicycle" in name_str or "cycle" in name_str:
+                new_map[cls_id] = "bicycle"
+        
+        if new_map:
+            config.VEHICLE_CLASS_MAP = new_map
+            logger.info("Synchronized VEHICLE_CLASS_MAP from model: %s", new_map)
+
 
 def load_model() -> Any:
     """
@@ -65,6 +90,7 @@ def load_model() -> Any:
     try:
         model = YOLO(primary)
         logger.info("Model loaded: %s", primary)
+        sync_model_classes(model)
         return model
     except Exception as exc:
         logger.warning(
@@ -76,6 +102,7 @@ def load_model() -> Any:
         )
         model = YOLO(config.FALLBACK_MODEL)
         logger.info("Fallback model loaded: %s", config.FALLBACK_MODEL)
+        sync_model_classes(model)
         return model
 
 
@@ -134,6 +161,7 @@ def _draw_track(
     track_id:  int,
     label:     str,
     direction: str | None,
+    color_label: str | None = None,
 ) -> None:
     """Draw a bounding box and label for a single tracked vehicle."""
     x1, y1, x2, y2 = (int(v) for v in box)
@@ -146,7 +174,11 @@ def _draw_track(
 
     cv2.rectangle(frame, (x1, y1), (x2, y2), colour, config.BOX_THICKNESS)
 
-    text = f"#{track_id} {label}"
+    if color_label and color_label != "Unknown":
+        text = f"#{track_id} {color_label} {label}"
+    else:
+        text = f"#{track_id} {label}"
+
     (tw, th), _ = cv2.getTextSize(
         text, cv2.FONT_HERSHEY_SIMPLEX, config.FONT_SCALE, 1
     )
@@ -248,6 +280,7 @@ async def _post_event(
         "location_id":   int(cam.get("location_id", 1)),
         "lane_id":       int(getattr(event, "lane_id", cam.get("lane_id", 1))),
         "vehicle_class": event.vehicle_class,
+        "vehicle_color": getattr(event, "vehicle_color", "Unknown"),
         "confidence":    round(event.confidence, 4),
         "crossing_dir":  event.direction,
         "timestamp":     event.timestamp.isoformat(),
@@ -277,11 +310,12 @@ async def _post_event(
 class _BoxWrapper:
     """Thin shim that exposes a single-index slice of an ultralytics Boxes."""
 
-    __slots__ = ("_boxes", "_idx")
+    __slots__ = ("_boxes", "_idx", "color")
 
-    def __init__(self, boxes: Any, idx: int) -> None:
+    def __init__(self, boxes: Any, idx: int, color: str = "Unknown") -> None:
         self._boxes = boxes
         self._idx   = idx
+        self.color  = color
 
     @property
     def id(self) -> Any:
@@ -890,12 +924,15 @@ async def run_camera(
                     ),
                 )
 
-                # ---- collect tracks -------------------------------------
+                # ---- collect tracks & detect vehicle colors ---------------
                 tracks: list[Any] = []
                 if results and results[0].boxes is not None:
                     boxes = results[0].boxes
                     for i in range(len(boxes)):
-                        tracks.append(_BoxWrapper(boxes, i))
+                        box_slice = boxes.xyxy[i]
+                        b_coords = (float(box_slice[0]), float(box_slice[1]), float(box_slice[2]), float(box_slice[3]))
+                        v_color = detect_vehicle_color(frame, b_coords)
+                        tracks.append(_BoxWrapper(boxes, i, color=v_color))
 
                 # ---- count crossings ------------------------------------
                 events = counter.process_tracks(tracks, frame_h, frame_w=frame.shape[1])
@@ -940,6 +977,7 @@ async def run_camera(
                             annotated,
                             (float(box[0]), float(box[1]), float(box[2]), float(box[3])),
                             tid, label, last_dir,
+                            color_label=getattr(t, "color", None)
                         )
 
                     except Exception:

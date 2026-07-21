@@ -212,6 +212,7 @@ class EventCreate(BaseModel):
     location_id: int
     lane_id: int = Field(..., ge=0)
     vehicle_class: str
+    vehicle_color: Optional[str] = Field("Unknown")
     confidence: float = Field(..., ge=0.0, le=1.0)
     crossing_dir: str = Field("in")
     timestamp: Optional[datetime] = None  # defaults to server now() if omitted
@@ -225,6 +226,7 @@ class EventRead(BaseModel):
     location_id: int
     lane_id: int
     vehicle_class: str
+    vehicle_color: Optional[str] = "Unknown"
     confidence: float
     crossing_dir: str
     timestamp: datetime

@@ -71,7 +71,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from database import engine
     from models import Base
     from sqlalchemy import text
-    from db_dialect import apply_camera_upgrades, create_analytics_views
+    from db_dialect import apply_camera_upgrades, apply_event_upgrades, create_analytics_views
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -81,6 +81,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # explicitly. The column list lives in db_dialect so the test suites can
         # bring their own long-lived databases up to date the same way.
         await apply_camera_upgrades(conn)
+        await apply_event_upgrades(conn)
 
         dialect = conn.engine.dialect
 

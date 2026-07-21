@@ -45,12 +45,15 @@ export default function LiveFeedPanel({ lastMessage }) {
       })
   }, [selectedId])
 
-  // Update live stats from WebSocket events
+  // Update live stats & recent events from WebSocket
+  const [recentEvents, setRecentEvents] = useState([])
+
   useEffect(() => {
     if (!lastMessage) return
     if (lastMessage.type === 'new_event') {
       const evt = lastMessage.event
       if (String(evt.camera_id) === String(selectedId)) {
+        setRecentEvents((prev) => [evt, ...prev.slice(0, 4)])
         setLiveStats((prev) => {
           const next = prev ? { ...prev } : { car: 0, bike: 0, heavy: 0, bus: 0 }
           const cls = evt.vehicle_class
@@ -63,6 +66,21 @@ export default function LiveFeedPanel({ lastMessage }) {
       }
     }
   }, [lastMessage, selectedId])
+
+  const COLOR_BADGE_STYLES = {
+    Red: 'bg-red-500/20 text-red-300 border-red-500/40',
+    Orange: 'bg-orange-500/20 text-orange-300 border-orange-500/40',
+    Yellow: 'bg-yellow-500/20 text-yellow-300 border-yellow-500/40',
+    Green: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
+    Cyan: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40',
+    Blue: 'bg-blue-500/20 text-blue-300 border-blue-500/40',
+    Purple: 'bg-purple-500/20 text-purple-300 border-purple-500/40',
+    Pink: 'bg-pink-500/20 text-pink-300 border-pink-500/40',
+    White: 'bg-slate-100/20 text-slate-100 border-slate-300/40',
+    Black: 'bg-zinc-800 text-zinc-300 border-zinc-700',
+    Silver: 'bg-slate-400/20 text-slate-300 border-slate-400/40',
+    Unknown: 'bg-gray-500/20 text-gray-400 border-gray-500/30',
+  }
 
   const selectedCam = cameras?.find((c) => (c.id ?? c.camera_id) === selectedId)
   const streamSrc = selectedId ? `${STREAM_BASE}/stream/${selectedId}` : null
@@ -77,10 +95,6 @@ export default function LiveFeedPanel({ lastMessage }) {
     setImgError(false)
     setImgKey((k) => k + 1)
   }
-
-  const totalNow = liveStats
-    ? ((liveStats.car ?? 0) + (liveStats.bike ?? 0) + (liveStats.heavy ?? 0) + (liveStats.bus ?? 0) + (liveStats.bicycle ?? 0))
-    : null
 
   return (
     <div className="flex flex-col gap-3 h-full">
@@ -133,8 +147,6 @@ export default function LiveFeedPanel({ lastMessage }) {
             className="w-full h-full object-cover"
             onError={() => setImgError(true)}
           />
-
-
         )}
 
         {/* Offline state */}
@@ -181,6 +193,30 @@ export default function LiveFeedPanel({ lastMessage }) {
           </div>
         )}
       </div>
+
+      {/* Live Detections Ticker */}
+      {recentEvents.length > 0 && (
+        <div className="bg-bg-card border border-bg-border rounded-xl p-3 space-y-2">
+          <div className="text-xs font-semibold text-text-muted uppercase tracking-wider">Live Detections</div>
+          <div className="flex flex-wrap gap-2">
+            {recentEvents.map((evt, idx) => {
+              const colorName = evt.vehicle_color || 'Unknown'
+              const badgeStyle = COLOR_BADGE_STYLES[colorName] || COLOR_BADGE_STYLES.Unknown
+              const clsLabel = evt.vehicle_class ? evt.vehicle_class.replace('_', ' ').toUpperCase() : 'VEHICLE'
+
+              return (
+                <div key={idx} className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg border border-bg-border text-xs">
+                  <span className={`px-1.5 py-0.5 rounded border text-[10px] font-semibold ${badgeStyle}`}>
+                    {colorName}
+                  </span>
+                  <span className="font-bold text-text-primary">{clsLabel}</span>
+                  <span className="text-text-muted">#{evt.track_id}</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Counting Line Editor Modal */}
       {showLineEditor && selectedCam && (

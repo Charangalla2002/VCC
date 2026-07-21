@@ -422,6 +422,30 @@ async def apply_camera_upgrades(conn: AsyncConnection) -> None:
         logger.info("Added missing cameras.%s column (%s)", col_name, ddl_type)
 
 
+EVENT_UPGRADE_COLUMNS = [
+    ("vehicle_color", String(32), "DEFAULT 'Unknown'"),
+]
+
+
+async def apply_event_upgrades(conn: AsyncConnection) -> None:
+    """Ensure all columns added to events exist."""
+    existing = {
+        c["name"]
+        for c in await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_columns("events"))
+    }
+    dialect = conn.engine.dialect
+
+    for col_name, col_type, col_extra in EVENT_UPGRADE_COLUMNS:
+        if col_name in existing:
+            continue
+        ddl_type = col_type.compile(dialect=dialect)
+        ddl = "ALTER TABLE events ADD COLUMN %s %s" % (col_name, ddl_type)
+        if col_extra:
+            ddl += " " + col_extra
+        await conn.execute(text(ddl))
+        logger.info("Added missing events.%s column (%s)", col_name, ddl_type)
+
+
 # ---------------------------------------------------------------------------
 # Analytics views
 # ---------------------------------------------------------------------------

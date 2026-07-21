@@ -43,6 +43,7 @@ class CrossingEvent(NamedTuple):
     camera_id:     str
     timestamp:     datetime
     lane_id:       int = 1
+    vehicle_color: str = "Unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +332,8 @@ class LineCounter:
                                 confidence=voted_conf,
                                 camera_id=self.camera_id,
                                 timestamp=now,
-                                lane_id=lane_id
+                                lane_id=lane_id,
+                                vehicle_color=getattr(track, "color", "Unknown")
                             ))
                             logger.debug("cam=%s track=%d Line %s DOWN", self.camera_id, track_id, line["name"])
 
@@ -348,7 +350,8 @@ class LineCounter:
                                 confidence=voted_conf,
                                 camera_id=self.camera_id,
                                 timestamp=now,
-                                lane_id=lane_id
+                                lane_id=lane_id,
+                                vehicle_color=getattr(track, "color", "Unknown")
                             ))
                             logger.debug("cam=%s track=%d Line %s UP", self.camera_id, track_id, line["name"])
 

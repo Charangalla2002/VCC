@@ -14,7 +14,6 @@ import Settings from './pages/Settings'
 import Devices from './pages/Devices'
 import Users from './pages/Users'
 import AuditLogs from './pages/AuditLogs'
-import TrainingStudio from './pages/TrainingStudio'
 import VideoAnalysis from './pages/VideoAnalysis'
 import ChangePassword from './pages/ChangePassword'
 
@@ -102,7 +101,6 @@ export default function App() {
           <Route path="/devices"    element={<Devices />} />
           <Route path="/users"      element={<AdminRoute><Users /></AdminRoute>} />
           <Route path="/logs"       element={<AdminRoute><AuditLogs /></AdminRoute>} />
-          <Route path="/training"   element={<AdminRoute><TrainingStudio /></AdminRoute>} />
           <Route path="/change-password" element={<ChangePassword />} />
           {/* Analytics sub-routes */}
           <Route path="/analytics/volume"         element={<Analytics tab="volume" />} />

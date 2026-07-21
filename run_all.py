@@ -36,6 +36,8 @@ def main():
     if not os.path.isfile(venv_python):
         # Fall back to sys.executable if virtualenv not found
         venv_python = sys.executable
+    else:
+        venv_python = os.path.abspath(venv_python)
 
     # Check for GStreamer disable option in backend/.env
     disable_gst = False
@@ -149,6 +151,22 @@ def main():
 
         threading.Thread(target=log_reader, args=(frontend_proc.stdout, "[FRONTEND]", cyan), daemon=True).start()
         threading.Thread(target=log_reader, args=(frontend_proc.stderr, "[FRONTEND]", cyan), daemon=True).start()
+
+        # 4. Start Isolated Training Studio UI
+        print(f"{magenta}[SYSTEM] Starting Isolated Training Studio UI (Vite, Port 5174)...{reset}")
+        training_frontend_proc = subprocess.Popen(
+            [npm_cmd, "run", "dev:training"],
+            cwd="frontend",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=env
+        )
+        processes.append(("TRAINING-UI", training_frontend_proc))
+
+        threading.Thread(target=log_reader, args=(training_frontend_proc.stdout, "[TRAINING-UI]", magenta), daemon=True).start()
+        threading.Thread(target=log_reader, args=(training_frontend_proc.stderr, "[TRAINING-UI]", magenta), daemon=True).start()
 
         print(f"\n{green}[SYSTEM] All services running! Press Ctrl+C to terminate all services.{reset}\n")
 

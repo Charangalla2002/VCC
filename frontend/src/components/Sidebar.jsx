@@ -56,7 +56,7 @@ const navItems = [
     ]
   },
   { label: 'Devices',           path: '/devices',     icon: Monitor },
-  { label: 'Training Studio',   path: '/training',    icon: Cpu },
+  { label: 'Training Studio',   path: 'http://localhost:5174', icon: Cpu, isExternal: true },
   { label: 'Users',             path: '/users',       icon: User },
   { label: 'Audit Logs',        path: '/logs',        icon: FileText },
   { label: 'Settings',          path: '/settings',    icon: Settings },
@@ -112,6 +112,28 @@ function NavItem({ item, collapsed, onNavigate }) {
     } else {
       onNavigate?.()
     }
+  }
+
+  if (item.isExternal) {
+    return (
+      <li>
+        <a
+          href={item.path}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-3 px-3 py-2.5 rounded-lg mx-2 cursor-pointer select-none transition-all duration-200 group relative text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+          title={collapsed ? item.label : undefined}
+        >
+          <item.icon size={18} className="flex-shrink-0 text-text-muted group-hover:text-accent-cyan transition-colors" />
+          {!collapsed && (
+            <span className="flex-1 text-sm font-medium truncate flex items-center justify-between">
+              <span>{item.label}</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent-purple/20 text-accent-purple font-mono">5174</span>
+            </span>
+          )}
+        </a>
+      </li>
+    )
   }
 
   return (
