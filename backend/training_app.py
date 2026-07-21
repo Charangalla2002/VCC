@@ -40,8 +40,8 @@ app = FastAPI(
 )
 
 # CORS middleware
-_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000")
-ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:3000")
+ALLOWED_ORIGINS = list(set([o.strip() for o in _raw_origins.split(",") if o.strip()] + ["http://localhost:5174"]))
 
 app.add_middleware(
     CORSMiddleware,
