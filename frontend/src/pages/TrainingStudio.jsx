@@ -574,6 +574,24 @@ export default function TrainingStudio() {
                   })}
                 </select>
 
+                {/* Live Camera Stream Preview Box */}
+                {selectedCamera && (
+                  <div className="relative rounded-lg overflow-hidden border border-bg-border bg-bg h-44 flex items-center justify-center">
+                    <img
+                      src={`${STREAM_BASE_URL}/stream/${selectedCamera}`}
+                      alt="Live Stream Preview"
+                      className="w-full h-full object-cover"
+                      onError={(e) => {
+                        e.target.style.display = 'none';
+                      }}
+                    />
+                    <div className="absolute top-2 left-2 flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur text-[10px] text-white font-medium">
+                      <span className="w-1.5 h-1.5 rounded-full bg-accent-red live-pulse" />
+                      <span>LIVE PREVIEW</span>
+                    </div>
+                  </div>
+                )}
+
                 {/* Auto-capture toggle */}
                 <div className="bg-bg rounded-lg border border-bg-border p-3 space-y-2">
                   <div className="flex items-center justify-between">

@@ -163,21 +163,24 @@ def _draw_track(
     direction: str | None,
     color_label: str | None = None,
 ) -> None:
-    """Draw a bounding box and label for a single tracked vehicle."""
+    """Draw a bounding box and label for a single tracked vehicle. Highlights counted vehicles in bright green/magenta."""
     x1, y1, x2, y2 = (int(v) for v in box)
 
+    # Bounding Box Color: Bright Green for DOWN count, Bright Magenta for UP count, Cyan for uncounted
     colour = (
-        config.COLOUR_BOX_DOWN if direction == "down"
-        else config.COLOUR_BOX_UP if direction == "up"
-        else config.COLOUR_BOX_NONE
+        (0, 255, 0) if direction == "down"
+        else (255, 0, 255) if direction == "up"
+        else (255, 212, 0)
     )
 
-    cv2.rectangle(frame, (x1, y1), (x2, y2), colour, config.BOX_THICKNESS)
+    thickness = config.BOX_THICKNESS + 1 if direction else config.BOX_THICKNESS
+    cv2.rectangle(frame, (x1, y1), (x2, y2), colour, thickness)
 
+    counted_badge = " [COUNTED]" if direction else ""
     if color_label and color_label != "Unknown":
-        text = f"#{track_id} {color_label} {label}"
+        text = f"#{track_id}{counted_badge} {color_label} {label}"
     else:
-        text = f"#{track_id} {label}"
+        text = f"#{track_id}{counted_badge} {label}"
 
     (tw, th), _ = cv2.getTextSize(
         text, cv2.FONT_HERSHEY_SIMPLEX, config.FONT_SCALE, 1
@@ -188,7 +191,7 @@ def _draw_track(
         (x1 + 2, y1 - 4),
         cv2.FONT_HERSHEY_SIMPLEX,
         config.FONT_SCALE,
-        config.COLOUR_TEXT,
+        (0, 0, 0) if direction == "down" else config.COLOUR_TEXT,
         1,
         cv2.LINE_AA,
     )

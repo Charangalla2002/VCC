@@ -122,6 +122,7 @@ class LineCounter:
     # rather than growing with the length of the track, so a vehicle lingering in
     # frame cannot grow this without bound.
     _class_votes: dict[int, dict[int, list[float]]] = field(default_factory=dict, repr=False)
+    _color_votes: dict[int, dict[str, int]] = field(default_factory=dict, repr=False)
 
     def __post_init__(self):
         # If no lines list is provided, translate from counting_line / line_y
@@ -288,6 +289,7 @@ class LineCounter:
             # the per-line loop below would count the same observation once for
             # every configured line and skew the vote on multi-line cameras.
             self._record_class_vote(track_id, track)
+            self._record_color_vote(track_id, track)
 
         for line in self.lines:
             lid = line["id"]
@@ -333,7 +335,7 @@ class LineCounter:
                                 camera_id=self.camera_id,
                                 timestamp=now,
                                 lane_id=lane_id,
-                                vehicle_color=getattr(track, "color", "Unknown")
+                                vehicle_color=self._voted_color(track_id, getattr(track, "color", "Unknown"))
                             ))
                             logger.debug("cam=%s track=%d Line %s DOWN", self.camera_id, track_id, line["name"])
 
@@ -351,7 +353,7 @@ class LineCounter:
                                 camera_id=self.camera_id,
                                 timestamp=now,
                                 lane_id=lane_id,
-                                vehicle_color=getattr(track, "color", "Unknown")
+                                vehicle_color=self._voted_color(track_id, getattr(track, "color", "Unknown"))
                             ))
                             logger.debug("cam=%s track=%d Line %s UP", self.camera_id, track_id, line["name"])
 
@@ -433,6 +435,18 @@ class LineCounter:
         else:
             entry[0] += 1.0
             entry[1] += conf
+
+    def _record_color_vote(self, track_id: int, track: Any) -> None:
+        color = getattr(track, "color", None)
+        if color and color != "Unknown":
+            hist = self._color_votes.setdefault(track_id, {})
+            hist[color] = hist.get(color, 0) + 1
+
+    def _voted_color(self, track_id: int, fallback: str = "Unknown") -> str:
+        hist = self._color_votes.get(track_id)
+        if not hist:
+            return fallback
+        return max(hist, key=hist.get)
 
     def _voted_class(self, track_id: int, track: Any) -> tuple[str, float]:
         """
