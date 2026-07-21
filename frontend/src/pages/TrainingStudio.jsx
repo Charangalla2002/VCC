@@ -55,6 +55,7 @@ export default function TrainingStudio() {
   const [autoCaptureEnabled, setAutoCaptureEnabled] = useState(false)
   const [autoCaptureInterval, setAutoCaptureInterval] = useState(10) // seconds
   const [autoCaptureStatus, setAutoCaptureStatus] = useState('') // last capture result
+  const [autoAnnotateMode, setAutoAnnotateMode] = useState(false)
   const autoCaptureRef = useRef(null)
 
   // Label Classes states
@@ -378,7 +379,45 @@ export default function TrainingStudio() {
 
   // Labeler canvas mouse events
   const handleMouseDown = (e) => {
-    if (!imageRef.current) return
+    if (!imageRef.current || !containerRef.current) return
+
+    // Smart Click Auto-Annotation Mode (Roboflow-style click-to-box)
+    if (autoAnnotateMode && selectedImage) {
+      const rect = containerRef.current.getBoundingClientRect()
+      const clickX = e.clientX - rect.left
+      const clickY = e.clientY - rect.top
+      const imgW = imageRef.current.clientWidth
+      const imgH = imageRef.current.clientHeight
+
+      if (imgW > 0 && imgH > 0) {
+        const x_norm = clickX / imgW
+        const y_norm = clickY / imgH
+
+        trainingApi.post('/api/training/auto-annotate-point', {
+          filename: selectedImage.filename,
+          x_norm,
+          y_norm,
+          class_id: activeClass
+        }).then(res => {
+          if (res.data?.box) {
+            const b = res.data.box
+            const newPix = {
+              class_id: b.class_id,
+              x: (b.x_center - b.width / 2) * imgW,
+              y: (b.y_center - b.height / 2) * imgH,
+              w: b.width * imgW,
+              h: b.height * imgH
+            }
+            setDrawnBoxes(prev => [...prev, newPix])
+            setSelectedBoxIndex(drawnBoxes.length)
+          }
+        }).catch(err => {
+          console.error("Smart auto-annotate error", err)
+        })
+      }
+      return
+    }
+
     const rect = containerRef.current.getBoundingClientRect()
     const startX = e.clientX - rect.left
     const startY = e.clientY - rect.top
@@ -743,13 +782,26 @@ export default function TrainingStudio() {
                       <h3 className="text-sm font-semibold text-text-primary font-mono">{selectedImage.filename}</h3>
                       <p className="text-[10px] text-text-muted">Click and drag to draw a bounding box around objects</p>
                     </div>
-                    <button 
-                      onClick={handleSaveLabels}
-                      className="bg-accent-green/10 hover:bg-accent-green/20 border border-accent-green/20 text-accent-green px-4 py-1.5 rounded-lg text-sm font-semibold flex items-center gap-1.5 transition-colors"
-                    >
-                      <Check size={16} />
-                      Save Labels
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setAutoAnnotateMode(v => !v)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border transition-all
+                          ${autoAnnotateMode
+                            ? 'bg-accent-purple text-white border-accent-purple shadow-glow-purple'
+                            : 'bg-bg-hover text-text-secondary border-bg-border hover:text-text-primary'}`}
+                        title="Click on any vehicle to auto-generate a tight bounding box"
+                      >
+                        <Cpu size={14} />
+                        <span>{autoAnnotateMode ? '⚡ Smart Click Active' : 'Smart Click Auto-Annotate'}</span>
+                      </button>
+                      <button 
+                        onClick={handleSaveLabels}
+                        className="bg-accent-green/10 hover:bg-accent-green/20 border border-accent-green/20 text-accent-green px-4 py-1.5 rounded-lg text-sm font-semibold flex items-center gap-1.5 transition-colors"
+                      >
+                        <Check size={16} />
+                        Save Labels
+                      </button>
+                    </div>
                   </div>
 
                   {/* Relative wrapping canvas container */}

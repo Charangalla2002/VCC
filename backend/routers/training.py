@@ -410,6 +410,93 @@ async def save_label(
     return {"status": "ok", "message": "Annotations saved successfully"}
 
 
+class AutoAnnotatePointRequest(pydantic.BaseModel):
+    filename: str
+    x_norm: float
+    y_norm: float
+    class_id: int = 0
+
+
+@router.post("/auto-annotate-point", summary="Smart Click Auto-Annotation to compute tight bounding box around clicked point")
+async def auto_annotate_point(
+    body: AutoAnnotatePointRequest,
+    token: dict = Depends(optional_bearer_token),
+):
+    """Computes a tight bounding box around an object using OpenCV contour & segmentation from a single click."""
+    import cv2
+    import numpy as np
+
+    validate_filename(body.filename)
+    filepath = os.path.join(IMAGES_DIR, body.filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image file not found")
+
+    img = cv2.imread(filepath)
+    if img is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to load image file")
+
+    h, w = img.shape[:2]
+    px = int(body.x_norm * w)
+    py = int(body.y_norm * h)
+
+    # Localized ROI around click
+    roi_w, roi_h = int(w * 0.25), int(h * 0.25)
+    rx1, ry1 = max(0, px - roi_w), max(0, py - roi_h)
+    rx2, ry2 = min(w, px + roi_w), min(h, py + roi_h)
+
+    roi = img[ry1:ry2, rx1:rx2]
+    if roi.size == 0:
+        return {
+            "status": "ok",
+            "box": BoundingBox(
+                class_id=body.class_id,
+                x_center=body.x_norm,
+                y_center=body.y_norm,
+                width=0.15,
+                height=0.15,
+            )
+        }
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blur, 30, 150)
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    click_in_roi = (px - rx1, py - ry1)
+    best_bbox = None
+    min_dist = float("inf")
+
+    for cnt in contours:
+        x, y, bw, bh = cv2.boundingRect(cnt)
+        if bw > 15 and bh > 15:
+            cx, cy = x + bw / 2.0, y + bh / 2.0
+            dist = (cx - click_in_roi[0]) ** 2 + (cy - click_in_roi[1]) ** 2
+            if dist < min_dist:
+                min_dist = dist
+                best_bbox = (rx1 + x, ry1 + y, bw, bh)
+
+    if best_bbox:
+        bx, by, bw, bh = best_bbox
+    else:
+        bx, by, bw, bh = max(0, px - 40), max(0, py - 40), 80, 80
+
+    x_center = (bx + bw / 2.0) / float(w)
+    y_center = (by + bh / 2.0) / float(h)
+    norm_w = bw / float(w)
+    norm_h = bh / float(h)
+
+    return {
+        "status": "ok",
+        "box": BoundingBox(
+            class_id=body.class_id,
+            x_center=x_center,
+            y_center=y_center,
+            width=max(0.03, norm_w),
+            height=max(0.03, norm_h),
+        )
+    }
+
+
 #: Strong refs to fire-and-forget auto-train tasks (asyncio only holds weak refs).
 _AUTO_TRAIN_TASKS: set = set()
 
