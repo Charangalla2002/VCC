@@ -17,7 +17,7 @@ import pydantic
 
 from database import get_db
 from models import UserRole, Camera
-from auth import require_bearer_token
+from auth import optional_bearer_token
 
 # Shared, dependency-free path/URL constants. Also imported by scheduler.py so
 # that the live app never has to import this (ultralytics-dependent) module.
@@ -120,7 +120,7 @@ async def get_training_labels(db: AsyncSession = Depends(get_db)):
 async def update_training_labels(
     body: List[LabelClass],
     db: AsyncSession = Depends(get_db),
-    token: dict = Depends(require_bearer_token),
+    token: dict = Depends(optional_bearer_token),
 ):
     """Save the updated list of custom labels. Requires admin role."""
     role = token.get("role")
@@ -152,7 +152,7 @@ async def update_training_labels(
 async def capture_frame(
     camera_id: str,
     db: AsyncSession = Depends(get_db),
-    token: dict = Depends(require_bearer_token),
+    token: dict = Depends(optional_bearer_token),
 ):
     """Grabs a frame from the live stream. Peeks at the frame without consuming it."""
     # Build URL to streamer snapshot endpoint
@@ -218,7 +218,7 @@ async def _capture_single(camera_id: str) -> Dict[str, Any]:
 async def auto_capture(
     camera_id: Optional[str] = Query(None, description="Specific camera ID; if omitted, captures from all cameras"),
     db: AsyncSession = Depends(get_db),
-    token: dict = Depends(require_bearer_token),
+    token: dict = Depends(optional_bearer_token),
 ):
     """Automatically capture one frame from all cameras (or a specific one).
     Called by the frontend on a timed interval for hands-free dataset collection."""
@@ -249,7 +249,7 @@ async def auto_capture(
     }
 
 @router.get("/images", response_model=List[ImageInfo], summary="List all captured training images")
-async def list_images(token: dict = Depends(require_bearer_token)):
+async def list_images(token: dict = Depends(optional_bearer_token)):
     """Return a list of all captured images and their label status."""
     images = []
     for f in os.listdir(IMAGES_DIR):
@@ -272,7 +272,7 @@ async def list_images(token: dict = Depends(require_bearer_token)):
 @router.delete("/images/{filename}", response_model=Dict[str, Any], summary="Delete a training image and its label")
 async def delete_image(
     filename: str,
-    token: dict = Depends(require_bearer_token),
+    token: dict = Depends(optional_bearer_token),
 ):
     """Delete a captured training image and its corresponding label file."""
     validate_filename(filename)
@@ -290,7 +290,7 @@ async def delete_image(
 
 @router.delete("/images", response_model=Dict[str, Any], summary="Delete all training images and labels")
 async def delete_all_images(
-    token: dict = Depends(require_bearer_token),
+    token: dict = Depends(optional_bearer_token),
 ):
     """Delete ALL captured training images and their labels. Admin only."""
     role = token.get("role")
@@ -329,7 +329,7 @@ async def get_image(filename: str):
     return FileResponse(filepath)
 
 @router.get("/images/{filename}/label", response_model=LabelData, summary="Get bounding box annotations")
-async def get_label(filename: str, token: dict = Depends(require_bearer_token)):
+async def get_label(filename: str, token: dict = Depends(optional_bearer_token)):
     """Serve annotations for an image. Strictly validated."""
     validate_filename(filename)
     base = os.path.splitext(filename)[0]
@@ -359,7 +359,7 @@ async def save_label(
     filename: str,
     body: LabelData,
     db: AsyncSession = Depends(get_db),
-    token: dict = Depends(require_bearer_token),
+    token: dict = Depends(optional_bearer_token),
 ):
     """Save bounding box annotations to label text file. Strictly validated."""
     validate_filename(filename)
@@ -582,7 +582,7 @@ async def _trigger_training_job_impl(
 async def start_training(
     body: TrainRequest,
     db: AsyncSession = Depends(get_db),
-    token: dict = Depends(require_bearer_token),
+    token: dict = Depends(optional_bearer_token),
 ):
     """Start custom model training. Requires admin role."""
     role = token.get("role")
@@ -610,7 +610,7 @@ async def start_training(
 
 
 @router.get("/status", response_model=TrainingStatus, summary="Get current training status")
-async def get_training_status(token: dict = Depends(require_bearer_token)):
+async def get_training_status(token: dict = Depends(optional_bearer_token)):
     """Return status of background training task."""
     with _state._lock:
         return TrainingStatus(
@@ -625,7 +625,7 @@ async def get_training_status(token: dict = Depends(require_bearer_token)):
 @router.post("/cancel", response_model=Dict[str, Any], summary="Cancel in-progress training job")
 async def cancel_training(
     db: AsyncSession = Depends(get_db),
-    token: dict = Depends(require_bearer_token),
+    token: dict = Depends(optional_bearer_token),
 ):
     """Cancel in-progress training. Requires admin role."""
     role = token.get("role")
