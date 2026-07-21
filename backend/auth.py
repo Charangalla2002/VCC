@@ -118,6 +118,21 @@ async def require_bearer_token(
     return decode_token(credentials.credentials, expected_type="access")
 
 
+_optional_bearer_scheme = HTTPBearer(auto_error=False)
+
+
+async def optional_bearer_token(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(_optional_bearer_scheme),
+) -> dict:
+    """Dependency: validate Bearer JWT if present, or return anonymous payload if omitted."""
+    if not credentials or not credentials.credentials:
+        return {"sub": "anonymous"}
+    try:
+        return decode_token(credentials.credentials, expected_type="access")
+    except Exception:
+        return {"sub": "anonymous"}
+
+
 async def require_api_key(request: Request) -> None:
     """Dependency: validate X-API-Key header using constant-time comparison."""
     api_key: Optional[str] = request.headers.get("X-API-Key")

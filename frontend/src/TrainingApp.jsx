@@ -9,6 +9,11 @@ export default function TrainingApp() {
   useEffect(() => {
     const initAuth = async () => {
       try {
+        const params = new URLSearchParams(window.location.search)
+        const urlToken = params.get('token')
+        if (urlToken) {
+          localStorage.setItem('vcc_access_token', urlToken)
+        }
         await refreshAccessToken()
       } catch (err) {
         console.log("Session init check complete.")

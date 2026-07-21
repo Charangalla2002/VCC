@@ -92,7 +92,8 @@ export default function TrainingStudio() {
   // Auto-select first camera
   useEffect(() => {
     if (cameras.length && !selectedCamera) {
-      setSelectedCamera(cameras[0].id)
+      const firstId = cameras[0].id ?? cameras[0].camera_id
+      if (firstId) setSelectedCamera(String(firstId))
     }
   }, [cameras, selectedCamera])
 
@@ -563,9 +564,14 @@ export default function TrainingStudio() {
                   className="bg-bg border border-bg-border rounded-lg px-3 py-2 text-sm text-text-primary w-full focus:outline-none focus:border-accent-cyan"
                 >
                   <option value="">Select Camera...</option>
-                  {cameras.map(cam => (
-                    <option key={cam.id} value={cam.id}>{cam.name} (ID: {cam.id})</option>
-                  ))}
+                  {cameras.map(cam => {
+                    const cid = cam.id ?? cam.camera_id
+                    return (
+                      <option key={cid} value={cid}>
+                        {cam.name || `Camera ${cid}`} (ID: {cid})
+                      </option>
+                    )
+                  })}
                 </select>
 
                 {/* Auto-capture toggle */}

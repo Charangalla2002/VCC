@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import require_bearer_token
+from auth import require_bearer_token, optional_bearer_token
 from database import get_db
 from models import Camera, Event
 from schemas import CameraCreate, CameraRead, CameraUpdate, PaginatedResponse, CountingLineRead
@@ -70,7 +70,7 @@ async def list_cameras(
         description="Filter by source: 'live' for real cameras, 'upload' for uploaded videos",
     ),
     db: AsyncSession = Depends(get_db),
-    _: dict = Depends(require_bearer_token),
+    _: dict = Depends(optional_bearer_token),
 ) -> PaginatedResponse[CameraRead]:
     count_sub = (
         select(func.count(Event.id))

@@ -115,10 +115,13 @@ function NavItem({ item, collapsed, onNavigate }) {
   }
 
   if (item.isExternal) {
+    const tokenStr = getAccessToken() ? `?token=${getAccessToken()}` : ''
+    const targetUrl = `${item.path}${tokenStr}`
+
     return (
       <li>
         <a
-          href={item.path}
+          href={targetUrl}
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-3 px-3 py-2.5 rounded-lg mx-2 cursor-pointer select-none transition-all duration-200 group relative text-text-secondary hover:bg-bg-hover hover:text-text-primary"
