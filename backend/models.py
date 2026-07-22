@@ -220,3 +220,23 @@ class SystemSetting(Base):
     key = Column(String(255), primary_key=True)
     value = Column(String(1024), nullable=False)
 
+
+class ColorCorrection(Base):
+    __tablename__ = "color_corrections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_id = Column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        ForeignKey("events.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="CASCADE"), nullable=True)
+    vehicle_class = Column(String(32), nullable=False, default="car")
+    original_color = Column(String(32), nullable=False)
+    corrected_color = Column(String(32), nullable=False)
+    crop_image_path = Column(String(512), nullable=True)
+    user_email = Column(String(320), nullable=True)
+    notes = Column(String(255), nullable=True)
+    timestamp = Column(UtcDateTime, nullable=False, server_default=func.now())
+
+

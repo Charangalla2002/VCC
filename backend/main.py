@@ -238,7 +238,7 @@ app.add_middleware(SlowAPIMiddleware)
 # Routers
 # ---------------------------------------------------------------------------
 
-from routers import health, analytics, settings, counting_lines, videos  # noqa: E402
+from routers import health, analytics, settings, counting_lines, videos, color_corrections  # noqa: E402
 from routers import auth as auth_router  # noqa: E402
 from routers import cameras, events, locations, users  # noqa: E402
 from routers import alerts as alerts_router  # noqa: E402
@@ -254,6 +254,8 @@ app.include_router(users.router)
 app.include_router(settings.router)
 app.include_router(counting_lines.router)
 app.include_router(videos.router)
+app.include_router(color_corrections.router)
+
 
 
 

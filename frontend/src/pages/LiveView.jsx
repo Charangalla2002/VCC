@@ -3,6 +3,7 @@ import { useOutletContext } from 'react-router-dom'
 import { Activity, Camera } from 'lucide-react'
 import LiveFeedPanel from '../components/LiveFeedPanel'
 import { useApi } from '../hooks/useApi'
+import { EditableColorBadge } from '../components/EditableColorBadge'
 
 export default function LiveView() {
   const { lastMessage, connectionStatus } = useOutletContext()
@@ -61,8 +62,9 @@ export default function LiveView() {
                         {new Intl.DateTimeFormat(undefined, { timeStyle: 'medium' }).format(new Date(evt.timestamp || Date.now()))}
                       </span>
                     </div>
-                    <div className="text-xs text-text-secondary flex justify-between">
+                    <div className="text-xs text-text-secondary flex justify-between items-center mt-2">
                       <span>Cam: {evt.camera_id}</span>
+                      <EditableColorBadge eventId={evt.id} initialColor={evt.vehicle_color || 'Unknown'} />
                     </div>
                   </div>
                 ))
