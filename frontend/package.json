@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "dev:training": "vite --config vite.training.config.js",
+    "dev": "vite --host 0.0.0.0",
+    "dev:training": "vite --config vite.training.config.js --host 0.0.0.0",
     "build": "vite build",
     "preview": "vite preview"
   },

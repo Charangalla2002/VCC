@@ -14,6 +14,8 @@ import os
 import subprocess
 import threading
 import time
+import shutil
+import socket
 
 def log_reader(pipe, prefix, color_code):
     """Reads lines from a subprocess pipe and logs them with a prefix in color."""
@@ -26,6 +28,36 @@ def log_reader(pipe, prefix, color_code):
     except Exception:
         pass
 
+def get_npm_cmd():
+    """Locate npm executable across Windows, Linux, and WSL environments."""
+    if os.name == "nt":
+        return shutil.which("npm.cmd") or "npm.cmd"
+    return shutil.which("npm") or "npm"
+
+def get_wsl_ip():
+    """Detect if running inside WSL and return the primary eth0 IP address."""
+    try:
+        if os.path.exists("/proc/version"):
+            with open("/proc/version", "r") as f:
+                if "microsoft" in f.read().lower():
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(("8.8.8.8", 80))
+                    ip = s.getsockname()[0]
+                    s.close()
+                    return ip
+    except Exception:
+        pass
+    return None
+
+def check_port_in_use(port: int) -> bool:
+    """Check if a local TCP port is already open/bound."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            return s.connect_ex(('127.0.0.1', port)) == 0
+    except Exception:
+        return False
+
 def main():
     # Locate virtualenv python
     venv_python = (
@@ -34,7 +66,6 @@ def main():
         else os.path.join("backend", "venv", "bin", "python")
     )
     if not os.path.isfile(venv_python):
-        # Fall back to sys.executable if virtualenv not found
         venv_python = sys.executable
     else:
         venv_python = os.path.abspath(venv_python)
@@ -66,8 +97,6 @@ def main():
         env["PATH"] = gst_bin + os.pathsep + local_bin + os.pathsep + env.get("PATH", "")
         env["GI_TYPELIB_PATH"] = gst_typelibs
 
-
-
     processes = []
 
     # -- Color codes --
@@ -81,6 +110,21 @@ def main():
     print("=" * 70)
     print(f"{cyan}VCC UNIFIED SERVICE LAUNCHER{reset}")
     print("=" * 70)
+
+    wsl_ip = get_wsl_ip()
+    if wsl_ip:
+        print(f"{yellow}[SYSTEM INFO] WSL Environment Detected! WSL IP: {wsl_ip}{reset}")
+        print(f"{yellow}[SYSTEM INFO] Frontend will bind to 0.0.0.0 (Accessible via http://{wsl_ip}:5173 or http://localhost:5173){reset}\n")
+
+    # Check node_modules in frontend
+    node_modules = os.path.join("frontend", "node_modules")
+    npm_cmd = get_npm_cmd()
+    if not os.path.exists(node_modules):
+        print(f"{yellow}[SYSTEM] 'frontend/node_modules' missing. Running 'npm install'...{reset}")
+        try:
+            subprocess.run([npm_cmd, "install"], cwd="frontend", check=True, shell=(os.name != "nt"))
+        except Exception as e:
+            print(f"{red}[SYSTEM ERROR] Failed to run 'npm install': {e}{reset}")
 
     try:
         # 1. Start Backend API
@@ -115,9 +159,7 @@ def main():
         threading.Thread(target=log_reader, args=(training_proc.stdout, "[TRAINING]", magenta), daemon=True).start()
         threading.Thread(target=log_reader, args=(training_proc.stderr, "[TRAINING]", magenta), daemon=True).start()
 
-        # Give backend a moment to bind and initialize database/materialized views
-        time.sleep(3)
-
+        time.sleep(2)
 
         # 2. Start Detection Layer
         print(f"{yellow}[SYSTEM] Starting Detection Layer (GStreamer + YOLO, Port 8001)...{reset}")
@@ -137,15 +179,16 @@ def main():
 
         # 3. Start Frontend Dev Server
         print(f"{cyan}[SYSTEM] Starting Frontend Dev Server (Vite, Port 5173)...{reset}")
-        npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
+        use_shell = (os.name != "nt")
         frontend_proc = subprocess.Popen(
-            [npm_cmd, "run", "dev"],
+            [npm_cmd, "run", "dev"] if not use_shell else f"{npm_cmd} run dev",
             cwd="frontend",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            env=env
+            env=env,
+            shell=use_shell
         )
         processes.append(("FRONTEND", frontend_proc))
 
@@ -155,20 +198,27 @@ def main():
         # 4. Start Isolated Training Studio UI
         print(f"{magenta}[SYSTEM] Starting Isolated Training Studio UI (Vite, Port 5174)...{reset}")
         training_frontend_proc = subprocess.Popen(
-            [npm_cmd, "run", "dev:training"],
+            [npm_cmd, "run", "dev:training"] if not use_shell else f"{npm_cmd} run dev:training",
             cwd="frontend",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            env=env
+            env=env,
+            shell=use_shell
         )
         processes.append(("TRAINING-UI", training_frontend_proc))
 
         threading.Thread(target=log_reader, args=(training_frontend_proc.stdout, "[TRAINING-UI]", magenta), daemon=True).start()
         threading.Thread(target=log_reader, args=(training_frontend_proc.stderr, "[TRAINING-UI]", magenta), daemon=True).start()
 
-        print(f"\n{green}[SYSTEM] All services running! Press Ctrl+C to terminate all services.{reset}\n")
+        print(f"\n{green}[SYSTEM] All 5 microservices running! Press Ctrl+C to terminate all services.{reset}\n")
+
+        if wsl_ip:
+            print(f"{cyan}➜ Dashboard (WSL):    http://{wsl_ip}:5173/{reset}")
+            print(f"{cyan}➜ Dashboard (Local):  http://localhost:5173/{reset}")
+            print(f"{magenta}➜ Training UI (WSL):  http://{wsl_ip}:5174/{reset}")
+            print(f"{magenta}➜ Training UI (Local):http://localhost:5174/{reset}\n")
 
         # Monitor loop
         while True:
