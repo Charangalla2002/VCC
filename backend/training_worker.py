@@ -66,13 +66,17 @@ def main(argv: list[str] | None = None) -> int:
     runs_root = os.path.join(work_dir, "runs")
     project_dir = os.path.join(runs_root, "detect")
 
+    # Disable tqdm progress bars to prevent Windows subprocess pipe write errors (OSError 22)
+    os.environ["TQDM_DISABLE"] = "1"
+
     try:
         from ultralytics import YOLO
         import torch
 
         # Determine optimal compute device & worker threads
         device = 0 if torch.cuda.is_available() else "cpu"
-        num_workers = min(4, max(1, (os.cpu_count() or 2) // 2))
+        # On Windows CPU, workers=0 avoids PyTorch multiprocessing pipe inheritance errors
+        num_workers = 0 if (device == "cpu" or os.name == "nt") else min(4, max(1, (os.cpu_count() or 2) // 2))
 
         emit(
             event="start",
