@@ -4,7 +4,7 @@ import { Pencil, Check } from 'lucide-react';
 
 const PREDEFINED_COLORS = [
   'White', 'Black', 'Silver', 'Grey', 'Red', 
-  'Blue', 'Green', 'Yellow', 'Orange', 'Cyan', 'Purple', 'Ping'
+  'Blue', 'Green', 'Yellow', 'Orange', 'Cyan', 'Purple', 'Pink'
 ];
 
 export function EditableColorBadge({ eventId, initialColor, onColorUpdated }) {
@@ -17,7 +17,7 @@ export function EditableColorBadge({ eventId, initialColor, onColorUpdated }) {
     if (!eventId) return;
     setSaving(true);
     try {
-      await axios.post(/api/color-corrections/events/ + eventId + '/correct', {
+      await axios.post('/api/color-corrections/events/' + eventId + '/correct', {
         corrected_color: newColor,
         notes: 'Manual override from UI'
       });
@@ -56,7 +56,7 @@ export function EditableColorBadge({ eventId, initialColor, onColorUpdated }) {
       </div>
 
       {isOpen && (
-        <div className="absolute z-50 mt-1.5 w=44 rounded-xl bg-slate-900 border border-slate-800 shadow-2xl p-2 text-slate-200 text-xs backdrop-blur-md">
+        <div className="absolute z-50 mt-1.5 w-44 rounded-xl bg-slate-900 border border-slate-800 shadow-2xl p-2 text-slate-200 text-xs backdrop-blur-md">
           <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider px-2 py-1 mb-1">
             Correct Vehicle Color
           </div>
@@ -65,10 +65,32 @@ export function EditableColorBadge({ eventId, initialColor, onColorUpdated }) {
               <button
                 key={c}
                 disabled={saving}
-                onClevk={() => handleSelectColor(c)}
-                className={"text-left px-2 py-1 rounded-md transition-colors hover:bg-slate-800 flex items-center justify-between " + (c === color ? 'bg-indigo-600/30 text-indigo-300 focus:semibold' : '')}
+                onClick={() => handleSelectColor(c)}
+                className={"text-left px-2 py-1 rounded-md transition-colors hover:bg-slate-800 flex items-center justify-between " + (c === color ? 'bg-indigo-600/30 text-indigo-300 font-semibold' : '')}
               >
-                <span>{color}</span>
+                <span>{c}</span>
                 {c === color && <Check className="w-3 h-3 text-indigo-400" />}
               </button>
-            ))}¤(€€€€€€€€€€ğ½‘¥Øø(€€€€€€€€€€ñ‘¥Ø±…ÍÍ9…µ”ô‰‰½É‘•ÈµĞ‰½É‘•ÈµÍ±…Ñ”´àÀÀÁĞ´Ä¸Ô™±•à…À´Äˆø(€€€€€€€€€€€€ñ¥¹ÁÕĞ(€€€€€€€€€€€€€ÑåÁ”ô‰Ñ•áĞˆ(€€€€€€€€€€€€€Á±…•¡½±‘•Èô‰ÕÍÑ½´¸¸¸ˆ(€€€€€€€€€€€€€Ù…±Õ”õíÕÍÑ½µ½±½Éô(€€€€€€€€€€€€€½¹¡…¹”õì¡”¤€ôøÍ•ÑÕÍÑ½µ½±½È¡”¹Ñ…É•Ğ¹Ù…±Õ”¥ô(€€€€€€€€€€€€€½¹-•å½İ¸õì¡”¤€ôø”¹­•ä€ôôô€¹Ñ•Èœ€˜˜ÕÍÑ½µ½±½È¹ÑÉ¥´ ¤€˜˜¡…¹‘±•M•±•Ñ½±½È¡ÕÍÑ½µ½±½È¹ÑÉ¥´ ¤¥ô(€€€€€€€€€€€€€±…ÍÍ9…µ”ô‰Üµ™Õ±°‰œµÍ±…Ñ”´äÔÀ‰½É‘•È‰½É‘•ÈµÍ±…Ñ”´àÀÀÉ½Õ¹‘•Áà´Ä¸ÔÁä´ÄÑ•áĞµáÌÑ•áĞµÍ±…Ñ”´ÈÀÀ™½ÕÌé½ÕÑ±¥¹”µ¹½¹”™½ÕÌé‰½É‘•Èµ¥¹‘¥¼´ÔÀÀˆ(€€€€€€€€€€€€¼ø(€€€€€€€€€€€€ñ‰ÕÑÑ½¸(€€€€€€€€€€€€€½¹±¥¬õì ¤€ôøÕÍÑ½µ½±½È¹ÑÉ¥´ ¤€˜˜¡…¹‘±•M•±•Ñ½±½È¡ÕÍÑ½µ½±½È¹ÑÉ¥´ ¤¥ô(€€€€€€€€€€€€€±…ÍÍ9…µ”ô‰‰œµ¥¹‘¥¼´ØÀÀ¡½Ù•Èé‰œµ¥¹‘¥¼´ÔÀÀÑ•áĞµİ¡¥Ñ”É½Õ¹‘•Áà´ÈÑ•áĞµlÄÁÁát™½¹Ğµµ•‘¥Õ´ÑÉ…¹Í¥Ñ¥½¸µ½±½ÉÌˆ(€€€€€€€€€€€€ø(€€€€€€€€€€€€€M…Ù”(€€€€€€€€€€€€ğ½‰ÕÑÑ½¸ø(€€€€€€€€€€ğ½‘¥Øø(€€€€€€€€ğ½‘¥Øø(€€€€€€¥ô(€€€€ğ½‘¥Øø(€€¤ì)ô
+            ))}
+          </div>
+          <div className="border-t border-slate-800 pt-1.5 flex gap-1">
+            <input
+              type="text"
+              placeholder="Custom..."
+              value={customColor}
+              onChange={(e) => setCustomColor(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && customColor.trim() && handleSelectColor(customColor.trim())}
+              className="w-full bg-slate-950 border border-slate-800 rounded px-1.5 py-1 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+            />
+            <button
+              onClick={() => customColor.trim() && handleSelectColor(customColor.trim())}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white rounded px-2 text-[10px] font-medium transition-colors"
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
