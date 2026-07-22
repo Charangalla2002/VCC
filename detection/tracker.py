@@ -776,6 +776,9 @@ async def run_camera(
         target_fps = float(os.getenv("VCC_TARGET_FPS", "10.0"))
         target_delay = 1.0 / target_fps if target_fps > 0 else 0
 
+        # Per-track temporal color voting memory
+        track_color_history: dict[int, list[str]] = {}
+
         # Reconnect backoff: 1 s doubling to RECONNECT_MAX_BACKOFF.  A camera
         # that is permanently dead must not spin at 1 Hz forever, nor flood the
         # log with one warning per attempt.
@@ -935,6 +938,23 @@ async def run_camera(
                         box_slice = boxes.xyxy[i]
                         b_coords = (float(box_slice[0]), float(box_slice[1]), float(box_slice[2]), float(box_slice[3]))
                         v_color = detect_vehicle_color(frame, b_coords)
+                        
+                        # Per-track temporal color majority voting
+                        t_id = int(boxes.id[i]) if (boxes.id is not None and i < len(boxes.id)) else None
+                        if t_id is not None:
+                            if t_id not in track_color_history:
+                                track_color_history[t_id] = []
+                            if v_color != "Unknown":
+                                track_color_history[t_id].append(v_color)
+                                if len(track_color_history[t_id]) > 15:
+                                    track_color_history[t_id].pop(0)
+
+                            if track_color_history[t_id]:
+                                from collections import Counter
+                                most_common = Counter(track_color_history[t_id]).most_common(1)
+                                if most_common:
+                                    v_color = most_common[0][0]
+
                         tracks.append(_BoxWrapper(boxes, i, color=v_color))
 
                 # ---- count crossings ------------------------------------
