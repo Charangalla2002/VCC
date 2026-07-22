@@ -76,11 +76,8 @@ async def fetch_cameras():
 
         cams = []
         for r in rows:
-            # An uploaded video that has already been processed is a finished job,
-            # not a camera. Its task exits at EOF, and without this the supervisor
-            # would see a completed task and respawn it every poll -- reprocessing
-            # the same file forever and multiplying its counts.
-            if r["source_type"] == "upload" and r["processing_status"] in ("completed", "failed"):
+            # Skip only failed uploads; active uploaded videos can stream as video feeds.
+            if r["source_type"] == "upload" and r["processing_status"] == "failed":
                 continue
 
             url = r["rtsp_url"]

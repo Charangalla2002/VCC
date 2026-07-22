@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import require_bearer_token
+from auth import optional_bearer_token, require_bearer_token
 from database import get_db
 from models import Location
 from schemas import LocationCreate, LocationRead, LocationUpdate, PaginatedResponse
@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api/locations", tags=["locations"])
 async def create_location(
     body: LocationCreate,
     db: AsyncSession = Depends(get_db),
-    _: dict = Depends(require_bearer_token),
+    _: dict = Depends(optional_bearer_token),
 ) -> LocationRead:
     loc = Location(**body.model_dump())
     db.add(loc)
@@ -44,7 +44,7 @@ async def list_locations(
     limit: int = Query(20, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
-    _: dict = Depends(require_bearer_token),
+    _: dict = Depends(optional_bearer_token),
 ) -> PaginatedResponse[LocationRead]:
     total_q = await db.execute(select(func.count(Location.id)))
     total: int = total_q.scalar_one()

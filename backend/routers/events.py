@@ -15,7 +15,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from alerts import run_alert_checks
-from auth import require_api_key, require_bearer_token
+from auth import require_api_key, optional_bearer_token
 from database import get_db
 from models import Event
 from schemas import EventCreate, EventRead, PaginatedResponse
@@ -110,7 +110,7 @@ async def list_events(
     location_id: Optional[int] = Query(None),
     vehicle_class: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
-    _: dict = Depends(require_bearer_token),
+    _: dict = Depends(optional_bearer_token),
 ) -> PaginatedResponse[EventRead]:
     """List events with optional time-range, camera, location, and class filters."""
     base = select(Event)

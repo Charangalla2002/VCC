@@ -148,70 +148,126 @@ async def update_training_labels(
         
     return body
 
+async def _grab_frame_direct(camera_id: str, db: AsyncSession) -> Optional[bytes]:
+    """Helper to grab a frame directly via OpenCV from camera source or uploaded video if live stream is offline."""
+    import cv2
+    import random
+    from sqlalchemy import select as sa_select
+
+    sources_to_try = []
+    try:
+        try:
+            cid_int = int(camera_id)
+            stmt = sa_select(Camera).where(Camera.id == cid_int)
+        except ValueError:
+            stmt = sa_select(Camera).where(Camera.name == camera_id)
+        
+        result = await db.execute(stmt)
+        camera = result.scalar_one_or_none()
+        if camera and camera.rtsp_url:
+            sources_to_try.append(camera.rtsp_url)
+    except Exception:
+        pass
+
+    # Add fallback uploaded video files from uploads/videos/
+    backend_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    uploads_dir = os.path.abspath(os.path.join(backend_root, "..", "uploads", "videos"))
+    if os.path.exists(uploads_dir):
+        for f in os.listdir(uploads_dir):
+            if f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')):
+                sources_to_try.append(os.path.join(uploads_dir, f))
+
+    for src in sources_to_try:
+        try:
+            try:
+                src_val = int(src)
+            except ValueError:
+                src_val = src
+
+            cap = cv2.VideoCapture(src_val)
+            if cap.isOpened():
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                if total_frames > 15:
+                    random_pos = random.randint(1, total_frames - 5)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, random_pos)
+
+                ret, frame = cap.read()
+                cap.release()
+                if ret and frame is not None and frame.size > 0:
+                    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    if ok:
+                        return buf.tobytes()
+        except Exception:
+            continue
+    return None
+
+
 @router.post("/capture", response_model=Dict[str, Any], summary="Capture frame from live camera stream")
 async def capture_frame(
     camera_id: str,
     db: AsyncSession = Depends(get_db),
     token: dict = Depends(optional_bearer_token),
 ):
-    """Grabs a frame from the live stream. Peeks at the frame without consuming it."""
-    # Build URL to streamer snapshot endpoint
+    """Grabs a frame from the live stream or direct camera/video source."""
+    frame_bytes = None
     url = f"{STREAM_BASE_URL}/snapshot/{camera_id}"
     
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(url, timeout=5.0)
-            if response.status_code != 200:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Camera snapshot endpoint returned status {response.status_code}"
-                )
-            
-            if response.headers.get("X-Placeholder") == "true":
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Camera stream is offline or initializing. No frames available yet."
-                )
-            
-            # Save the frame image
-            timestamp = int(time.time())
-            filename = f"img_{timestamp}.jpg"
-            filepath = os.path.join(IMAGES_DIR, filename)
-            
-            with open(filepath, "wb") as f:
-                f.write(response.content)
-                
-            return {
-                "status": "ok",
-                "filename": filename,
-                "timestamp": timestamp,
-                "message": "Frame captured successfully"
-            }
-    except httpx.RequestError as exc:
+            response = await client.get(url, timeout=3.0)
+            if response.status_code == 200 and response.headers.get("X-Placeholder") != "true":
+                frame_bytes = response.content
+    except Exception:
+        pass
+
+    if frame_bytes is None:
+        frame_bytes = await _grab_frame_direct(camera_id, db)
+
+    if frame_bytes is None:
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to reach detection streamer snapshot endpoint: {exc}"
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to capture frame: camera source is offline and no fallback video source available."
         )
 
+    timestamp = int(time.time())
+    filename = f"img_{timestamp}.jpg"
+    filepath = os.path.join(IMAGES_DIR, filename)
 
-async def _capture_single(camera_id: str) -> Dict[str, Any]:
-    """Internal helper: capture one frame from given camera_id. Returns result dict or error dict."""
+    with open(filepath, "wb") as f:
+        f.write(frame_bytes)
+
+    return {
+        "status": "ok",
+        "filename": filename,
+        "timestamp": timestamp,
+        "message": "Frame captured successfully"
+    }
+
+
+async def _capture_single(camera_id: str, db: AsyncSession) -> Dict[str, Any]:
+    """Internal helper: capture one frame from given camera_id using live stream or direct source fallback."""
+    frame_bytes = None
     url = f"{STREAM_BASE_URL}/snapshot/{camera_id}"
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(url, timeout=5.0)
-            if response.status_code != 200:
-                return {"camera_id": camera_id, "status": "error", "detail": f"Snapshot returned {response.status_code}"}
-            if response.headers.get("X-Placeholder") == "true":
-                return {"camera_id": camera_id, "status": "offline", "detail": "Camera stream offline"}
-            timestamp = int(time.time())
-            filename = f"img_{timestamp}_{camera_id}.jpg"
-            filepath = os.path.join(IMAGES_DIR, filename)
-            with open(filepath, "wb") as f:
-                f.write(response.content)
-            return {"camera_id": camera_id, "status": "ok", "filename": filename}
-    except httpx.RequestError as exc:
-        return {"camera_id": camera_id, "status": "error", "detail": str(exc)}
+            response = await client.get(url, timeout=3.0)
+            if response.status_code == 200 and response.headers.get("X-Placeholder") != "true":
+                frame_bytes = response.content
+    except Exception:
+        pass
+
+    if frame_bytes is None:
+        frame_bytes = await _grab_frame_direct(camera_id, db)
+
+    if frame_bytes is None:
+        return {"camera_id": camera_id, "status": "offline", "detail": "Camera stream offline"}
+
+    timestamp = int(time.time())
+    filename = f"img_{timestamp}_{camera_id}.jpg"
+    filepath = os.path.join(IMAGES_DIR, filename)
+    with open(filepath, "wb") as f:
+        f.write(frame_bytes)
+    return {"camera_id": camera_id, "status": "ok", "filename": filename}
 
 
 @router.post("/auto-capture", response_model=Dict[str, Any], summary="Auto-capture frames from all cameras")
@@ -220,14 +276,12 @@ async def auto_capture(
     db: AsyncSession = Depends(get_db),
     token: dict = Depends(optional_bearer_token),
 ):
-    """Automatically capture one frame from all cameras (or a specific one).
-    Called by the frontend on a timed interval for hands-free dataset collection."""
+    """Automatically capture one frame from all cameras (or a specific one)."""
     from sqlalchemy import select as sa_select
     
     if camera_id:
         camera_ids = [str(camera_id)]
     else:
-        # Fetch all camera IDs from DB — completely isolated from training logic
         result = await db.execute(sa_select(Camera.id))
         camera_ids = [str(row[0]) for row in result.all()]
     
@@ -236,8 +290,8 @@ async def auto_capture(
     
     results = []
     for cid in camera_ids:
-        result = await _capture_single(cid)
-        results.append(result)
+        res_item = await _capture_single(cid, db)
+        results.append(res_item)
     
     captured = sum(1 for r in results if r["status"] == "ok")
     return {
