@@ -63,6 +63,9 @@ def main(argv: list[str] | None = None) -> int:
     os.makedirs(work_dir, exist_ok=True)
     os.chdir(work_dir)
 
+    runs_root = os.path.join(work_dir, "runs")
+    project_dir = os.path.join(runs_root, "detect")
+
     # Disable tqdm progress bars and wrap stream writes to prevent Windows subprocess pipe write errors (OSError 22)
     os.environ["TQDM_DISABLE"] = "1"
 
