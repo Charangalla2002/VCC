@@ -8,7 +8,16 @@ export default defineConfig({
       name: 'serve-training-html-at-root',
       configureServer(server) {
         server.middlewares.use((req, res, next) => {
-          if (req.url === '/' || req.url === '/index.html') {
+          const path = req.url.split('?')[0]
+          if (
+            !path.startsWith('/api') &&
+            !path.startsWith('/auth') &&
+            !path.startsWith('/ws') &&
+            !path.startsWith('/stream') &&
+            !path.startsWith('/src') &&
+            !path.startsWith('/@') &&
+            !path.includes('.')
+          ) {
             req.url = '/training.html'
           }
           next()

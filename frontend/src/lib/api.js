@@ -68,8 +68,9 @@ api.interceptors.response.use(
       } catch (refreshError) {
         processPendingQueue(refreshError, null)
         clearTokens()
-        // Hard redirect to login — works outside React context too
-        window.location.href = '/login'
+        if (window.location.port !== '5174') {
+          window.location.href = '/login'
+        }
         return Promise.reject(refreshError)
       } finally {
         _isRefreshing = false
@@ -128,7 +129,9 @@ trainingApi.interceptors.response.use(
       } catch (refreshError) {
         processPendingQueue(refreshError, null)
         clearTokens()
-        window.location.href = '/login'
+        if (window.location.port !== '5174') {
+          window.location.href = '/login'
+        }
         return Promise.reject(refreshError)
       } finally {
         _isRefreshing = false
