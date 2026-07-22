@@ -63,11 +63,28 @@ def main(argv: list[str] | None = None) -> int:
     os.makedirs(work_dir, exist_ok=True)
     os.chdir(work_dir)
 
-    runs_root = os.path.join(work_dir, "runs")
-    project_dir = os.path.join(runs_root, "detect")
-
-    # Disable tqdm progress bars to prevent Windows subprocess pipe write errors (OSError 22)
+    # Disable tqdm progress bars and wrap stream writes to prevent Windows subprocess pipe write errors (OSError 22)
     os.environ["TQDM_DISABLE"] = "1"
+
+    orig_stderr_write = sys.stderr.write
+    def safe_stderr_write(s):
+        try:
+            return orig_stderr_write(s)
+        except Exception:
+            pass
+    sys.stderr.write = safe_stderr_write
+
+    try:
+        import ultralytics.utils.tqdm as u_tqdm
+        orig_close = u_tqdm.TQDM.close
+        def safe_close(self, *args, **kwargs):
+            try:
+                orig_close(self, *args, **kwargs)
+            except Exception:
+                self.closed = True
+        u_tqdm.TQDM.close = safe_close
+    except Exception:
+        pass
 
     try:
         from ultralytics import YOLO
