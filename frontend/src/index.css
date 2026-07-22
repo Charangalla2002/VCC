@@ -4,24 +4,25 @@
 
 /* ─── CSS Variables mirroring Tailwind tokens ─── */
 :root {
-  --bg-default:    #0a0f1e;
-  --bg-card:       #1a2035;
-  --bg-border:     #2a3050;
-  --bg-hover:      #1e2845;
+  --bg-default:    #0b0f19;
+  --bg-card:       rgba(15, 23, 42, 0.75);
+  --bg-border:     rgba(51, 65, 85, 0.6);
+  --bg-hover:      rgba(30, 41, 59, 0.8);
 
-  --accent-cyan:   #00d4ff;
-  --accent-purple: #7c3aed;
+  --accent-cyan:   #38bdf8;
+  --accent-purple: #8b5cf6;
+  --accent-indigo: #6366f1;
   --accent-green:  #10b981;
   --accent-amber:  #f59e0b;
   --accent-red:    #ef4444;
   --accent-blue:   #3b82f6;
 
-  --text-primary:   #f1f5f9;
+  --text-primary:   #f8fafc;
   --text-secondary: #94a3b8;
-  --text-muted:     #475569;
+  --text-muted:     #64748b;
 
-  --chart-car:     #00d4ff;
-  --chart-bike:    #7c3aed;
+  --chart-car:     #38bdf8;
+  --chart-bike:    #8b5cf6;
   --chart-heavy:   #f59e0b;
   --chart-bus:     #10b981;
   --chart-bicycle: #f97316;
@@ -39,7 +40,7 @@
 }
 
 html {
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
   font-size: 16px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -62,11 +63,12 @@ body::before {
   width: 100vw;
   height: 100vh;
   background: 
-    radial-gradient(circle at 15% 15%, rgba(0, 212, 255, 0.04), transparent 45%),
-    radial-gradient(circle at 85% 85%, rgba(124, 58, 237, 0.05), transparent 45%),
-    linear-gradient(rgba(42, 48, 80, 0.08) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(42, 48, 80, 0.08) 1px, transparent 1px);
-  background-size: 100% 100%, 100% 100%, 30px 30px, 30px 30px;
+    radial-gradient(circle at 10% 10%, rgba(99, 102, 241, 0.08), transparent 40%),
+    radial-gradient(circle at 90% 85%, rgba(56, 189, 248, 0.07), transparent 45%),
+    radial-gradient(circle at 50% 50%, rgba(139, 92, 246, 0.04), transparent 60%),
+    linear-gradient(rgba(51, 65, 85, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(51, 65, 85, 0.05) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 100% 100%, 32px 32px, 32px 32px;
   pointer-events: none;
   z-index: -1;
 }
@@ -75,6 +77,41 @@ body::before {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+}
+
+/* ─── Premium Glassmorphism & UI Card Utilities ─── */
+.glass-card {
+  background: rgba(15, 23, 42, 0.7);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(51, 65, 85, 0.6);
+  border-radius: 1rem;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-card:hover {
+  border-color: rgba(139, 92, 246, 0.4);
+  box-shadow: 0 12px 40px 0 rgba(99, 102, 241, 0.12);
+  transform: translateY(-2px);
+}
+
+.btn-gradient {
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #38bdf8 100%);
+  color: #ffffff;
+  font-weight: 600;
+  border-radius: 0.75rem;
+  box-shadow: 0 4px 20px -2px rgba(99, 102, 241, 0.4);
+  transition: all 0.25s ease;
+}
+
+.btn-gradient:hover {
+  transform: scale(1.02);
+  box-shadow: 0 6px 24px 0 rgba(99, 102, 241, 0.5);
+}
+
+.btn-gradient:active {
+  transform: scale(0.98);
 }
 
 /* ─── Page Mount Transition ─── */

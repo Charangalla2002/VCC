@@ -25,7 +25,7 @@ export default function LiveFeedPanel({ lastMessage }) {
   // Fetch initial stats for selected camera from events history
   useEffect(() => {
     if (!selectedId) return
-    setLiveStats(null) // reset stats while loading
+    setLiveStats(null)
     api.get('/api/events', { params: { camera_id: selectedId, limit: 1000 } })
       .then((res) => {
         const items = res.data?.items ?? []
@@ -70,7 +70,7 @@ export default function LiveFeedPanel({ lastMessage }) {
   const COLOR_BADGE_STYLES = {
     Red: 'bg-red-500/20 text-red-300 border-red-500/40',
     Orange: 'bg-orange-500/20 text-orange-300 border-orange-500/40',
-    Yellow: 'bg-yellow-500/20 text-yellow-300 border-yellow-500/40',
+    Yellow: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
     Green: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
     Cyan: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40',
     Blue: 'bg-blue-500/20 text-blue-300 border-blue-500/40',
@@ -97,38 +97,41 @@ export default function LiveFeedPanel({ lastMessage }) {
   }
 
   return (
-    <div className="flex flex-col gap-3 h-full">
-      {/* ── Camera selector ── */}
-      <div className="flex items-center gap-3">
-        <label className="text-text-muted text-xs font-medium uppercase tracking-widest whitespace-nowrap">
-          Camera
-        </label>
-        <div className="relative flex-1 max-w-[260px]">
-          <select
-            value={selectedId ?? ''}
-            onChange={handleCameraChange}
-            disabled={camsLoading}
-            className="w-full bg-bg border border-bg-border rounded-lg px-3 py-2 text-text-primary text-sm
-                       appearance-none cursor-pointer hover:border-accent-cyan/40 transition-colors"
-          >
-            {camsLoading && <option value="">Loading cameras…</option>}
-            {!camsLoading && !cameras?.length && <option value="">No cameras found</option>}
-            {cameras?.map((cam) => {
-              const id = cam.id ?? cam.camera_id
-              return (
-                <option key={id} value={id}>
-                  {cam.name ?? `Camera ${id}`} — {cam.location ?? ''}
-                </option>
-              )
-            })}
-          </select>
-          <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-text-muted text-xs">▾</div>
+    <div className="flex flex-col gap-4 h-full">
+      {/* ── Camera selector bar ── */}
+      <div className="flex items-center justify-between gap-3 bg-slate-900/60 backdrop-blur-xl border border-slate-800/80 p-2.5 rounded-2xl shadow-lg">
+        <div className="flex items-center gap-2 flex-1">
+          <span className="text-slate-400 text-xs font-bold uppercase tracking-wider px-2">
+            Feed:
+          </span>
+          <div className="relative flex-1 max-w-[280px]">
+            <select
+              value={selectedId ?? ''}
+              onChange={handleCameraChange}
+              disabled={camsLoading}
+              className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-1.5 text-slate-200 text-xs font-semibold
+                         appearance-none cursor-pointer hover:border-indigo-500/50 focus:border-indigo-500 transition-colors"
+            >
+              {camsLoading && <option value="">Loading cameras…</option>}
+              {!camsLoading && !cameras?.length && <option value="">No cameras found</option>}
+              {cameras?.map((cam) => {
+                const id = cam.id ?? cam.camera_id
+                return (
+                  <option key={id} value={id}>
+                    {cam.name ?? `Camera ${id}`} — {cam.location ?? ''}
+                  </option>
+                )
+              })}
+            </select>
+            <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 text-xs">▾</div>
+          </div>
         </div>
+
         {/* Configure Lines button */}
         {selectedCam && (
           <button
             onClick={() => setShowLineEditor(true)}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-bg border border-bg-border text-text-secondary text-xs hover:border-accent-cyan/40 hover:text-accent-cyan transition-all"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-violet-600/20 to-indigo-600/20 border border-indigo-500/30 text-indigo-300 text-xs font-semibold hover:border-indigo-500 hover:text-white transition-all shadow-sm"
           >
             <Ruler size={13} />
             Configure Lines
@@ -137,61 +140,62 @@ export default function LiveFeedPanel({ lastMessage }) {
       </div>
 
       {/* ── Stream container ── */}
-      <div className="relative flex-1 min-h-[360px] rounded-xl overflow-hidden bg-black border border-bg-border flex items-center justify-center">
+      <div className="relative flex-1 min-h-[360px] rounded-2xl overflow-hidden bg-slate-950 border border-slate-800/90 shadow-2xl flex items-center justify-center group">
         {/* MJPEG stream */}
         {streamSrc && !imgError && (
           <img
             key={imgKey}
             src={streamSrc}
             alt="Live camera feed"
-            className="w-full h-full object-contain max-h-[520px]"
+            className="w-full h-full object-contain max-h-[520px] transition-transform duration-500 group-hover:scale-[1.005]"
             onError={() => setImgError(true)}
           />
         )}
 
         {/* Offline state */}
         {(imgError || !streamSrc) && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-bg">
-            <AlertCircle size={36} className="text-text-muted" />
-            <p className="text-text-muted text-sm">
-              {!streamSrc ? 'No camera selected' : 'Camera offline or stream unavailable'}
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-slate-950/90 backdrop-blur-md">
+            <div className="w-14 h-14 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
+              <AlertCircle size={28} />
+            </div>
+            <p className="text-slate-400 text-xs font-medium">
+              {!streamSrc ? 'No camera selected' : 'Camera stream unavailable or reconnecting...'}
             </p>
             {imgError && (
               <button
                 onClick={handleRetry}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-bg-hover border border-bg-border
-                           text-text-secondary text-xs hover:border-accent-cyan/40 hover:text-accent-cyan transition-all"
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600/20 border border-indigo-500/30 text-indigo-300 text-xs font-semibold hover:bg-indigo-600 hover:text-white transition-all shadow-md"
               >
                 <RefreshCw size={13} />
-                Retry
+                Reconnect Feed
               </button>
             )}
           </div>
         )}
 
-        {/* Top-left: camera info */}
+        {/* Top-left: camera info overlay */}
         {selectedCam && (
-          <div className="absolute top-3 left-3 flex items-center gap-2 px-3 py-1.5 rounded-full glass text-xs">
-            <span className="w-2 h-2 rounded-full bg-accent-red live-pulse" />
-            <span className="text-text-primary font-medium">{selectedCam.name ?? `Camera ${selectedId}`}</span>
-            <span className="text-text-muted">·</span>
-            <span className="text-text-muted">{selectedCam.location ?? '—'}</span>
+          <div className="absolute top-3 left-3 flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/80 border border-slate-700/60 backdrop-blur-md text-xs shadow-lg">
+            <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+            <span className="text-slate-100 font-semibold">{selectedCam.name ?? `Camera ${selectedId}`}</span>
+            <span className="text-slate-500">·</span>
+            <span className="text-slate-400 font-medium">{selectedCam.location ?? '—'}</span>
           </div>
         )}
 
         {/* Bottom-left: LIVE label */}
         {streamSrc && !imgError && (
-          <div className="absolute bottom-3 left-3 flex items-center gap-1.5 text-xs">
-            <Radio size={11} className="text-accent-red live-pulse" />
-            <span className="text-text-secondary font-semibold uppercase tracking-wide">LIVE</span>
+          <div className="absolute bottom-3 left-3 flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-900/80 border border-slate-800 backdrop-blur-md text-xs shadow-lg">
+            <Radio size={12} className="text-rose-500 animate-pulse" />
+            <span className="text-slate-200 font-bold uppercase tracking-wider text-[10px]">LIVE STREAM</span>
           </div>
         )}
       </div>
 
       {/* Live Detections Ticker */}
       {recentEvents.length > 0 && (
-        <div className="bg-bg-card border border-bg-border rounded-xl p-3 space-y-2">
-          <div className="text-xs font-semibold text-text-muted uppercase tracking-wider">Live Detections</div>
+        <div className="bg-slate-900/60 backdrop-blur-xl border border-slate-800/80 rounded-2xl p-3 space-y-2 shadow-lg">
+          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">Live Detections Feed</div>
           <div className="flex flex-wrap gap-2">
             {recentEvents.map((evt, idx) => {
               const colorName = evt.vehicle_color || 'Unknown'
@@ -199,12 +203,12 @@ export default function LiveFeedPanel({ lastMessage }) {
               const clsLabel = evt.vehicle_class ? evt.vehicle_class.replace('_', ' ').toUpperCase() : 'VEHICLE'
 
               return (
-                <div key={idx} className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg border border-bg-border text-xs">
-                  <span className={`px-1.5 py-0.5 rounded border text-[10px] font-semibold ${badgeStyle}`}>
+                <div key={idx} className="flex items-center gap-2 px-3 py-1 rounded-xl bg-slate-950/80 border border-slate-800 text-xs shadow-sm">
+                  <span className={`px-2 py-0.5 rounded-full border text-[10px] font-bold ${badgeStyle}`}>
                     {colorName}
                   </span>
-                  <span className="font-bold text-text-primary">{clsLabel}</span>
-                  <span className="text-text-muted">#{evt.track_id}</span>
+                  <span className="font-extrabold text-slate-100">{clsLabel}</span>
+                  <span className="text-slate-500 font-mono text-[10px]">#{evt.track_id}</span>
                 </div>
               )
             })}
