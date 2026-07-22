@@ -38,8 +38,11 @@ from training_paths import EVENT_PREFIX, TRAIN_BASE_MODEL, TRAIN_IMGSZ  # noqa: 
 
 def emit(**payload: object) -> None:
     """Write one structured event line for the parent process to parse."""
-    sys.stdout.write(EVENT_PREFIX + json.dumps(payload, default=str) + "\n")
-    sys.stdout.flush()
+    try:
+        sys.stdout.write(EVENT_PREFIX + json.dumps(payload, default=str) + "\n")
+        sys.stdout.flush()
+    except Exception:
+        pass
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -69,6 +72,14 @@ def main(argv: list[str] | None = None) -> int:
     # Disable tqdm progress bars and wrap stream writes to prevent Windows subprocess pipe write errors (OSError 22)
     os.environ["TQDM_DISABLE"] = "1"
 
+    orig_stdout_write = sys.stdout.write
+    def safe_stdout_write(s):
+        try:
+            return orig_stdout_write(s)
+        except Exception:
+            pass
+    sys.stdout.write = safe_stdout_write
+
     orig_stderr_write = sys.stderr.write
     def safe_stderr_write(s):
         try:
@@ -76,6 +87,18 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             pass
     sys.stderr.write = safe_stderr_write
+
+    try:
+        import logging
+        orig_handler_emit = logging.StreamHandler.emit
+        def safe_handler_emit(self, record):
+            try:
+                orig_handler_emit(self, record)
+            except Exception:
+                pass
+        logging.StreamHandler.emit = safe_handler_emit
+    except Exception:
+        pass
 
     try:
         import ultralytics.utils.tqdm as u_tqdm
