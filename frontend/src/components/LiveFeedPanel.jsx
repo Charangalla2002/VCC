@@ -137,21 +137,21 @@ export default function LiveFeedPanel({ lastMessage }) {
       </div>
 
       {/* ── Stream container ── */}
-      <div className="relative flex-1 min-h-[240px] rounded-xl overflow-hidden bg-bg border border-bg-border">
+      <div className="relative flex-1 min-h-[360px] rounded-xl overflow-hidden bg-black border border-bg-border flex items-center justify-center">
         {/* MJPEG stream */}
         {streamSrc && !imgError && (
           <img
             key={imgKey}
             src={streamSrc}
             alt="Live camera feed"
-            className="w-full h-full object-cover"
+            className="w-full h-full object-contain max-h-[520px]"
             onError={() => setImgError(true)}
           />
         )}
 
         {/* Offline state */}
         {(imgError || !streamSrc) && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-bg">
             <AlertCircle size={36} className="text-text-muted" />
             <p className="text-text-muted text-sm">
               {!streamSrc ? 'No camera selected' : 'Camera offline or stream unavailable'}
@@ -167,12 +167,6 @@ export default function LiveFeedPanel({ lastMessage }) {
               </button>
             )}
           </div>
-        )}
-
-        {/* Bottom gradient overlay */}
-        {streamSrc && !imgError && (
-          <div className="absolute inset-x-0 bottom-0 h-24 pointer-events-none"
-            style={{ background: 'linear-gradient(to top, rgba(10,15,30,0.9) 0%, transparent 100%)' }} />
         )}
 
         {/* Top-left: camera info */}
