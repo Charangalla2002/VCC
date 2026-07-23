@@ -68,9 +68,7 @@ async def list_cameras(
         None,
         pattern="^(live|upload)$",
         description="Filter by source: 'live' for real cameras, 'upload' for uploaded videos",
-    ),
     db: AsyncSession = Depends(get_db),
-    _: dict = Depends(optional_bearer_token),
 ) -> PaginatedResponse[CameraRead]:
     count_sub = (
         select(func.count(Event.id))
@@ -139,7 +137,7 @@ async def list_cameras(
 async def get_camera(
     camera_id: int,
     db: AsyncSession = Depends(get_db),
-    _: dict = Depends(require_bearer_token),
+    _: dict = Depends(optional_bearer_token),
 ) -> CameraRead:
     count_sub = (
         select(func.count(Event.id))

@@ -624,13 +624,13 @@ export default function TrainingStudio() {
                 ) : null}
 
                 <select 
-                  value={selectedCamera} 
+                  value={String(selectedCamera ?? '')} 
                   onChange={(e) => setSelectedCamera(e.target.value)}
                   className="bg-bg border border-bg-border rounded-lg px-3 py-2 text-sm text-text-primary w-full focus:outline-none focus:border-accent-cyan"
                 >
                   <option value="">Select Camera...</option>
                   {cameras.map(cam => {
-                    const cid = cam.id ?? cam.camera_id
+                    const cid = String(cam.id ?? cam.camera_id)
                     return (
                       <option key={cid} value={cid}>
                         {cam.name || `Camera ${cid}`} (ID: {cid})
