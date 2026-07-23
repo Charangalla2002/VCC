@@ -25,7 +25,7 @@ const PRESET_COLORS = [
 
 export default function TrainingStudio() {
   const [activeTab, setActiveTab] = useState('dataset') // dataset | labeler | training
-  const { data: camerasData, refetch: refetchCameras } = useApi('/api/cameras')
+  const { data: camerasData, loading: camerasLoading, error: camerasError, refetch: refetchCameras } = useApi('/api/cameras')
   const cameras = Array.isArray(camerasData) ? camerasData : (camerasData?.items ?? [])
   const { data: imagesData, refetch: refetchImages } = useApi('/api/training/images', {}, [], { apiInstance: trainingApi })
   const { data: trainingStatus, refetch: refetchStatus } = useApi('/api/training/status', {}, [], { apiInstance: trainingApi })
@@ -598,6 +598,31 @@ export default function TrainingStudio() {
                 Select a camera and enable auto-capture to automatically collect frames for training.
               </p>
               <div className="space-y-3">
+                {camerasLoading ? (
+                  <div className="text-xs text-text-muted flex items-center gap-2 py-2">
+                    <RefreshCw size={13} className="animate-spin text-accent-cyan" />
+                    <span>Connecting to camera service...</span>
+                  </div>
+                ) : camerasError || cameras.length === 0 ? (
+                  <div className="rounded-lg border border-accent-amber/30 bg-accent-amber/5 p-3 space-y-2">
+                    <div className="flex items-center justify-between text-xs text-accent-amber font-semibold">
+                      <span className="flex items-center gap-1.5">
+                        <Info size={14} />
+                        No active cameras detected
+                      </span>
+                      <button 
+                        onClick={refetchCameras}
+                        className="flex items-center gap-1 text-[11px] underline hover:text-white transition-colors"
+                      >
+                        <RefreshCw size={11} /> Retry
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-text-muted">
+                      {camerasError ? `Error: ${camerasError}` : 'Ensure main backend service (Port 8000) is running and cameras are configured.'}
+                    </p>
+                  </div>
+                ) : null}
+
                 <select 
                   value={selectedCamera} 
                   onChange={(e) => setSelectedCamera(e.target.value)}
