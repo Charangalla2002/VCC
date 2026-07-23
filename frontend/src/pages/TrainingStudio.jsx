@@ -26,7 +26,24 @@ const PRESET_COLORS = [
 export default function TrainingStudio() {
   const [activeTab, setActiveTab] = useState('dataset') // dataset | labeler | training
   const { data: camerasData, loading: camerasLoading, error: camerasError, refetch: refetchCameras } = useApi('/api/cameras')
-  const cameras = Array.isArray(camerasData) ? camerasData : (camerasData?.items ?? [])
+  const [fallbackCameras, setFallbackCameras] = useState([])
+
+  useEffect(() => {
+    fetch('/api/cameras')
+      .then(res => res.json())
+      .then(data => {
+        const items = Array.isArray(data) ? data : (data?.items ?? [])
+        if (items.length > 0) setFallbackCameras(items)
+      })
+      .catch(() => {})
+  }, [])
+
+  const cameras = (Array.isArray(camerasData) && camerasData.length > 0)
+    ? camerasData
+    : (camerasData?.items && camerasData.items.length > 0)
+      ? camerasData.items
+      : fallbackCameras
+
   const { data: imagesData, refetch: refetchImages } = useApi('/api/training/images', {}, [], { apiInstance: trainingApi })
   const { data: trainingStatus, refetch: refetchStatus } = useApi('/api/training/status', {}, [], { apiInstance: trainingApi })
 

@@ -68,6 +68,7 @@ async def list_cameras(
         None,
         pattern="^(live|upload)$",
         description="Filter by source: 'live' for real cameras, 'upload' for uploaded videos",
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedResponse[CameraRead]:
     count_sub = (
