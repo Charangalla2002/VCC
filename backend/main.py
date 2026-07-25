@@ -226,6 +226,8 @@ ALLOWED_ORIGINS = list(set(
     ["http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173", "http://127.0.0.1:5174"]
 ))
 
+logger.info("CORS allowed origins (Port 8000): %s", ALLOWED_ORIGINS)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
