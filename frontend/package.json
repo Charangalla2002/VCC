@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "dev:training": "vite --config vite.training.config.js --host 0.0.0.0",
     "build": "vite build",
     "preview": "vite preview"
   },
@@ -21,9 +22,5 @@
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.14",
     "vite": "^5.4.9"
-  },
-  "optionalDependencies": {
-    "@rollup/rollup-linux-x64-gnu": "^4.22.4",
-    "@rollup/rollup-win32-x64-msvc": "^4.22.4"
   }
 }

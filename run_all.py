@@ -59,18 +59,16 @@ def check_port_in_use(port: int) -> bool:
         return False
 
 def main():
-    # Locate virtualenv python across Windows, WSL, and Linux
-    candidates = [
-        os.path.join("backend", "venv", "Scripts", "python.exe"),
-        os.path.join("backend", "venv", "Scripts", "python"),
-        os.path.join("backend", "venv", "bin", "python"),
-        os.path.join("backend", "venv", "bin", "python3"),
-    ]
-    venv_python = sys.executable
-    for c in candidates:
-        if os.path.isfile(c):
-            venv_python = os.path.abspath(c)
-            break
+    # Locate virtualenv python
+    venv_python = (
+        os.path.join("backend", "venv", "Scripts", "python.exe")
+        if os.name == "nt"
+        else os.path.join("backend", "venv", "bin", "python")
+    )
+    if not os.path.isfile(venv_python):
+        venv_python = sys.executable
+    else:
+        venv_python = os.path.abspath(venv_python)
 
     # Check for GStreamer disable option in backend/.env
     disable_gst = False
@@ -120,11 +118,9 @@ def main():
 
     # Check node_modules in frontend
     node_modules = os.path.join("frontend", "node_modules")
-    rollup_linux = os.path.join("frontend", "node_modules", "@rollup", "rollup-linux-x64-gnu")
     npm_cmd = get_npm_cmd()
-    need_npm_install = not os.path.exists(node_modules) or (os.name != "nt" and not os.path.exists(rollup_linux))
-    if need_npm_install:
-        print(f"{yellow}[SYSTEM] Installing/updating frontend dependencies for current platform ({os.name})...{reset}")
+    if not os.path.exists(node_modules):
+        print(f"{yellow}[SYSTEM] 'frontend/node_modules' missing. Running 'npm install'...{reset}")
         try:
             subprocess.run([npm_cmd, "install"], cwd="frontend", check=True, shell=(os.name != "nt"))
         except Exception as e:
@@ -146,6 +142,22 @@ def main():
         
         threading.Thread(target=log_reader, args=(backend_proc.stdout, "[BACKEND]", green), daemon=True).start()
         threading.Thread(target=log_reader, args=(backend_proc.stderr, "[BACKEND]", green), daemon=True).start()
+
+        # 1b. Start Training Dedicated Server
+        print(f"{magenta}[SYSTEM] Starting Training Dedicated Server (Port 8002)...{reset}")
+        training_proc = subprocess.Popen(
+            [venv_python, "-m", "uvicorn", "training_app:app", "--host", "0.0.0.0", "--port", "8002"],
+            cwd="backend",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=env
+        )
+        processes.append(("TRAINING", training_proc))
+        
+        threading.Thread(target=log_reader, args=(training_proc.stdout, "[TRAINING]", magenta), daemon=True).start()
+        threading.Thread(target=log_reader, args=(training_proc.stderr, "[TRAINING]", magenta), daemon=True).start()
 
         time.sleep(2)
 
@@ -183,11 +195,30 @@ def main():
         threading.Thread(target=log_reader, args=(frontend_proc.stdout, "[FRONTEND]", cyan), daemon=True).start()
         threading.Thread(target=log_reader, args=(frontend_proc.stderr, "[FRONTEND]", cyan), daemon=True).start()
 
-        print(f"\n{green}[SYSTEM] All 3 core VCC services running! Press Ctrl+C to terminate all services.{reset}\n")
+        # 4. Start Isolated Training Studio UI
+        print(f"{magenta}[SYSTEM] Starting Isolated Training Studio UI (Vite, Port 5174)...{reset}")
+        training_frontend_proc = subprocess.Popen(
+            [npm_cmd, "run", "dev:training"] if not use_shell else f"{npm_cmd} run dev:training",
+            cwd="frontend",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=env,
+            shell=use_shell
+        )
+        processes.append(("TRAINING-UI", training_frontend_proc))
+
+        threading.Thread(target=log_reader, args=(training_frontend_proc.stdout, "[TRAINING-UI]", magenta), daemon=True).start()
+        threading.Thread(target=log_reader, args=(training_frontend_proc.stderr, "[TRAINING-UI]", magenta), daemon=True).start()
+
+        print(f"\n{green}[SYSTEM] All 5 microservices running! Press Ctrl+C to terminate all services.{reset}\n")
 
         if wsl_ip:
             print(f"{cyan}➜ Dashboard (WSL):    http://{wsl_ip}:5173/{reset}")
-            print(f"{cyan}➜ Dashboard (Local):  http://localhost:5173/{reset}\n")
+            print(f"{cyan}➜ Dashboard (Local):  http://localhost:5173/{reset}")
+            print(f"{magenta}➜ Training UI (WSL):  http://{wsl_ip}:5174/{reset}")
+            print(f"{magenta}➜ Training UI (Local):http://localhost:5174/{reset}\n")
 
         # Monitor loop
         while True:

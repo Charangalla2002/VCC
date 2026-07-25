@@ -1,0 +1,815 @@
+from __future__ import annotations
+import asyncio
+import os
+import re
+import shutil
+import time
+import logging
+import threading
+from typing import List, Dict, Optional, Any
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import FileResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+import httpx
+import pydantic
+
+from database import get_db
+from models import UserRole, Camera
+from auth import optional_bearer_token
+
+# Shared, dependency-free path/URL constants. Also imported by scheduler.py so
+# that the live app never has to import this (ultralytics-dependent) module.
+from training_paths import (  # noqa: F401 - re-exported for backwards compatibility
+    BASE_DIR,
+    IMAGES_DIR,
+    LABELS_DIR,
+    MIN_LABELED_IMAGES,
+    SPLIT_DIR,
+    STREAM_BASE_URL,
+    TRAINED_MODEL_DIR,
+    VCC_AUTO_TRAIN_THRESHOLD,
+)
+
+# Subprocess lifecycle manager (stdlib-only; owns the global TrainingState).
+from training_process import (  # noqa: F401 - re-exported for tests/compatibility
+    TrainingState,
+    _state,
+    append_log_locked as _append_log_locked,
+    shutdown_training,
+    spawn_training as _spawn_training,
+    terminate_process as _terminate_process,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/training", tags=["training"])
+
+
+# ---------------------------------------------------------------------------
+# Pydantic Schemas
+# ---------------------------------------------------------------------------
+class BoundingBox(pydantic.BaseModel):
+    class_id: int
+    x_center: float
+    y_center: float
+    width: float
+    height: float
+
+class LabelData(pydantic.BaseModel):
+    boxes: List[BoundingBox]
+
+class ImageInfo(pydantic.BaseModel):
+    filename: str
+    labeled: bool
+    timestamp: float
+
+class TrainingStatus(pydantic.BaseModel):
+    status: str
+    current_epoch: int
+    total_epochs: int
+    metrics: Dict[str, float]
+    logs: List[str]
+    new_model_name: Optional[str] = None
+
+class TrainRequest(pydantic.BaseModel):
+    epochs: int = 10
+    batch_size: int = 8
+    force: bool = False
+
+class LabelClass(pydantic.BaseModel):
+    id: int
+    name: str
+    color: str
+
+DEFAULT_CLASSES = [
+    {"id": 0, "name": "car", "color": "border-[#00d4ff] text-[#00d4ff] bg-[#00d4ff]/10"},
+    {"id": 1, "name": "motorcycle", "color": "border-[#7c3aed] text-[#7c3aed] bg-[#7c3aed]/10"},
+    {"id": 2, "name": "bus", "color": "border-[#10b981] text-[#10b981] bg-[#10b981]/10"},
+    {"id": 3, "name": "truck", "color": "border-[#f59e0b] text-[#f59e0b] bg-[#f59e0b]/10"},
+    {"id": 4, "name": "bicycle", "color": "border-[#f97316] text-[#f97316] bg-[#f97316]/10"}
+]
+
+# ---------------------------------------------------------------------------
+# Bounding Box Coordinates Helper
+# ---------------------------------------------------------------------------
+# Note: YOLO format: class_id x_center y_center width height (all float 0-1)
+# Bounding box values are normalized against image width and height.
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/labels", response_model=List[LabelClass], summary="Get active training label classes")
+async def get_training_labels(db: AsyncSession = Depends(get_db)):
+    """Retrieve active list of custom label classes, falling back to default 5 classes if unset."""
+    import json
+    from models import SystemSetting
+    from sqlalchemy import select as sa_select
+    try:
+        res = await db.execute(sa_select(SystemSetting).where(SystemSetting.key == "training_labels"))
+        row = res.scalar_one_or_none()
+        if row:
+            return json.loads(row.value)
+    except Exception as e:
+        logger.error("Failed to read training labels: %s", e)
+    return DEFAULT_CLASSES
+
+@router.post("/labels", response_model=List[LabelClass], summary="Update training label classes (Admin Only)")
+async def update_training_labels(
+    body: List[LabelClass],
+    db: AsyncSession = Depends(get_db),
+    token: dict = Depends(optional_bearer_token),
+):
+    """Save the updated list of custom labels. Requires admin role."""
+    role = token.get("role")
+    if role != UserRole.admin.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin users can modify training label classes",
+        )
+    import json
+    from models import SystemSetting
+    from sqlalchemy import select as sa_select
+    
+    serialized = json.dumps([c.model_dump() for c in body])
+    try:
+        res = await db.execute(sa_select(SystemSetting).where(SystemSetting.key == "training_labels"))
+        row = res.scalar_one_or_none()
+        if row:
+            row.value = serialized
+        else:
+            db.add(SystemSetting(key="training_labels", value=serialized))
+        await db.commit()
+    except Exception as e:
+        logger.error("Failed to update training labels: %s", e)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        
+    return body
+
+async def _grab_frame_direct(camera_id: str, db: AsyncSession) -> Optional[bytes]:
+    """Helper to grab a frame directly via OpenCV from camera source or uploaded video if live stream is offline."""
+    import cv2
+    import random
+    from sqlalchemy import select as sa_select
+
+    sources_to_try = []
+    try:
+        try:
+            cid_int = int(camera_id)
+            stmt = sa_select(Camera).where(Camera.id == cid_int)
+        except ValueError:
+            stmt = sa_select(Camera).where(Camera.name == camera_id)
+        
+        result = await db.execute(stmt)
+        camera = result.scalar_one_or_none()
+        if camera and camera.rtsp_url:
+            sources_to_try.append(camera.rtsp_url)
+    except Exception:
+        pass
+
+    # Add fallback uploaded video files from uploads/videos/
+    backend_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    uploads_dir = os.path.abspath(os.path.join(backend_root, "..", "uploads", "videos"))
+    if os.path.exists(uploads_dir):
+        for f in os.listdir(uploads_dir):
+            if f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')):
+                sources_to_try.append(os.path.join(uploads_dir, f))
+
+    for src in sources_to_try:
+        try:
+            try:
+                src_val = int(src)
+            except ValueError:
+                src_val = src
+
+            cap = cv2.VideoCapture(src_val)
+            if cap.isOpened():
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                if total_frames > 15:
+                    random_pos = random.randint(1, total_frames - 5)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, random_pos)
+
+                ret, frame = cap.read()
+                cap.release()
+                if ret and frame is not None and frame.size > 0:
+                    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    if ok:
+                        return buf.tobytes()
+        except Exception:
+            continue
+    return None
+
+
+@router.post("/capture", response_model=Dict[str, Any], summary="Capture frame from live camera stream")
+async def capture_frame(
+    camera_id: str,
+    db: AsyncSession = Depends(get_db),
+    token: dict = Depends(optional_bearer_token),
+):
+    """Grabs a frame from the live stream or direct camera/video source."""
+    frame_bytes = None
+    url = f"{STREAM_BASE_URL}/raw_snapshot/{camera_id}"
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=3.0)
+            if response.status_code == 200 and response.headers.get("X-Placeholder") != "true":
+                frame_bytes = response.content
+            else:
+                # Fall back to standard snapshot
+                resp_std = await client.get(f"{STREAM_BASE_URL}/snapshot/{camera_id}", timeout=3.0)
+                if resp_std.status_code == 200 and resp_std.headers.get("X-Placeholder") != "true":
+                    frame_bytes = resp_std.content
+    except Exception:
+        pass
+
+    if frame_bytes is None:
+        frame_bytes = await _grab_frame_direct(camera_id, db)
+
+    if frame_bytes is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to capture frame: camera source is offline and no fallback video source available."
+        )
+
+    timestamp = int(time.time())
+    filename = f"img_{timestamp}.jpg"
+    filepath = os.path.join(IMAGES_DIR, filename)
+
+    with open(filepath, "wb") as f:
+        f.write(frame_bytes)
+
+    return {
+        "status": "ok",
+        "filename": filename,
+        "timestamp": timestamp,
+        "message": "Frame captured successfully"
+    }
+
+
+async def _capture_single(camera_id: str, db: AsyncSession) -> Dict[str, Any]:
+    """Internal helper: capture one frame from given camera_id using live stream or direct source fallback."""
+    frame_bytes = None
+    url = f"{STREAM_BASE_URL}/raw_snapshot/{camera_id}"
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=3.0)
+            if response.status_code == 200 and response.headers.get("X-Placeholder") != "true":
+                frame_bytes = response.content
+            else:
+                resp_std = await client.get(f"{STREAM_BASE_URL}/snapshot/{camera_id}", timeout=3.0)
+                if resp_std.status_code == 200 and resp_std.headers.get("X-Placeholder") != "true":
+                    frame_bytes = resp_std.content
+    except Exception:
+        pass
+
+    if frame_bytes is None:
+        frame_bytes = await _grab_frame_direct(camera_id, db)
+
+    if frame_bytes is None:
+        return {"camera_id": camera_id, "status": "offline", "detail": "Camera stream offline"}
+
+    timestamp = int(time.time())
+    filename = f"img_{timestamp}_{camera_id}.jpg"
+    filepath = os.path.join(IMAGES_DIR, filename)
+    with open(filepath, "wb") as f:
+        f.write(frame_bytes)
+    return {"camera_id": camera_id, "status": "ok", "filename": filename}
+
+
+@router.post("/auto-capture", response_model=Dict[str, Any], summary="Auto-capture frames from all cameras")
+async def auto_capture(
+    camera_id: Optional[str] = Query(None, description="Specific camera ID; if omitted, captures from all cameras"),
+    db: AsyncSession = Depends(get_db),
+    token: dict = Depends(optional_bearer_token),
+):
+    """Automatically capture one frame from all cameras (or a specific one)."""
+    from sqlalchemy import select as sa_select
+    
+    if camera_id:
+        camera_ids = [str(camera_id)]
+    else:
+        result = await db.execute(sa_select(Camera.id))
+        camera_ids = [str(row[0]) for row in result.all()]
+    
+    if not camera_ids:
+        return {"status": "ok", "captured": 0, "results": [], "message": "No cameras found"}
+    
+    results = []
+    for cid in camera_ids:
+        res_item = await _capture_single(cid, db)
+        results.append(res_item)
+    
+    captured = sum(1 for r in results if r["status"] == "ok")
+    return {
+        "status": "ok",
+        "captured": captured,
+        "total": len(camera_ids),
+        "results": results,
+        "message": f"Auto-captured {captured}/{len(camera_ids)} frames successfully"
+    }
+
+@router.get("/images", response_model=List[ImageInfo], summary="List all captured training images")
+async def list_images(token: dict = Depends(optional_bearer_token)):
+    """Return a list of all captured images and their label status."""
+    images = []
+    for f in os.listdir(IMAGES_DIR):
+        if f.endswith(".jpg"):
+            base = os.path.splitext(f)[0]
+            label_file = os.path.join(LABELS_DIR, f"{base}.txt")
+            labeled = os.path.exists(label_file) and os.path.getsize(label_file) > 0
+            filepath = os.path.join(IMAGES_DIR, f)
+            images.append(ImageInfo(
+                filename=f,
+                labeled=labeled,
+                timestamp=os.path.getmtime(filepath)
+            ))
+            
+    # Sort by timestamp descending
+    images.sort(key=lambda x: x.timestamp, reverse=True)
+    return images
+
+
+@router.delete("/images/{filename}", response_model=Dict[str, Any], summary="Delete a training image and its label")
+async def delete_image(
+    filename: str,
+    token: dict = Depends(optional_bearer_token),
+):
+    """Delete a captured training image and its corresponding label file."""
+    validate_filename(filename)
+    filepath = os.path.join(IMAGES_DIR, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+    os.remove(filepath)
+    # Also remove label if exists
+    base = os.path.splitext(filename)[0]
+    label_path = os.path.join(LABELS_DIR, f"{base}.txt")
+    if os.path.exists(label_path):
+        os.remove(label_path)
+    return {"status": "ok", "message": f"Deleted {filename}"}
+
+
+@router.delete("/images", response_model=Dict[str, Any], summary="Delete all training images and labels")
+async def delete_all_images(
+    token: dict = Depends(optional_bearer_token),
+):
+    """Delete ALL captured training images and their labels. Admin only."""
+    role = token.get("role")
+    if role != UserRole.admin.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin users can delete all training images"
+        )
+    deleted = 0
+    for f in os.listdir(IMAGES_DIR):
+        if f.endswith(".jpg"):
+            os.remove(os.path.join(IMAGES_DIR, f))
+            deleted += 1
+    for f in os.listdir(LABELS_DIR):
+        if f.endswith(".txt"):
+            os.remove(os.path.join(LABELS_DIR, f))
+    return {"status": "ok", "deleted": deleted, "message": f"Deleted {deleted} images and all labels"}
+
+
+def validate_filename(filename: str) -> str:
+    """Strictly validate filename against img_<timestamp>.jpg or img_<timestamp>_<cameraid>.jpg patterns."""
+    if not re.match(r"^img_\d+(_\d+)?\.jpg$", filename):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid filename format. Expected img_<timestamp>.jpg or img_<timestamp>_<cameraid>.jpg"
+        )
+    return filename
+
+@router.get("/images/{filename}", summary="Get captured image file")
+async def get_image(filename: str):
+    """Serve the raw JPG image file. Strictly validated to prevent traversal."""
+    validate_filename(filename)
+    filepath = os.path.join(IMAGES_DIR, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image file not found")
+    return FileResponse(filepath)
+
+@router.get("/images/{filename}/label", response_model=LabelData, summary="Get bounding box annotations")
+async def get_label(filename: str, token: dict = Depends(optional_bearer_token)):
+    """Serve annotations for an image. Strictly validated."""
+    validate_filename(filename)
+    base = os.path.splitext(filename)[0]
+    label_path = os.path.join(LABELS_DIR, f"{base}.txt")
+    
+    boxes = []
+    if os.path.exists(label_path):
+        try:
+            with open(label_path, "r") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) == 5:
+                        boxes.append(BoundingBox(
+                            class_id=int(parts[0]),
+                            x_center=float(parts[1]),
+                            y_center=float(parts[2]),
+                            width=float(parts[3]),
+                            height=float(parts[4])
+                        ))
+        except Exception as e:
+            logger.error("Failed to read label txt file: %s", e)
+            
+    return LabelData(boxes=boxes)
+
+@router.post("/images/{filename}/label", response_model=Dict[str, Any], summary="Save bounding box annotations")
+async def save_label(
+    filename: str,
+    body: LabelData,
+    db: AsyncSession = Depends(get_db),
+    token: dict = Depends(optional_bearer_token),
+):
+    """Save bounding box annotations to label text file. Strictly validated."""
+    validate_filename(filename)
+    base = os.path.splitext(filename)[0]
+    label_path = os.path.join(LABELS_DIR, f"{base}.txt")
+    
+    try:
+        with open(label_path, "w") as f:
+            for box in body.boxes:
+                # YOLO format: class x_center y_center width height
+                f.write(f"{box.class_id} {box.x_center:.6f} {box.y_center:.6f} {box.width:.6f} {box.height:.6f}\n")
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to write label file: {e}"
+        )
+
+    # ---- Automatic training check --------------------------------------------
+    # Deliberately OUTSIDE the try above: a failure here is not a label-write
+    # failure and must not be misreported as one.
+    try:
+        all_images = [file for file in os.listdir(IMAGES_DIR) if file.endswith(".jpg")]
+        labeled_count = 0
+        for f in all_images:
+            b = os.path.splitext(f)[0]
+            lbl = os.path.join(LABELS_DIR, f"{b}.txt")
+            if os.path.exists(lbl) and os.path.getsize(lbl) > 0:
+                labeled_count += 1
+
+        if labeled_count >= VCC_AUTO_TRAIN_THRESHOLD:
+            # Check concurrency
+            is_idle = False
+            with _state._lock:
+                if _state.status != "training":
+                    is_idle = True
+
+            if is_idle:
+                logger.info("Labeled images threshold reached (%d/%d). Auto-triggering model training...", labeled_count, VCC_AUTO_TRAIN_THRESHOLD)
+                # Fire-and-forget on its own DB session: the request-scoped `db`
+                # is closed as soon as this handler returns.
+                task = asyncio.create_task(_auto_trigger_training())
+                _AUTO_TRAIN_TASKS.add(task)
+                task.add_done_callback(_AUTO_TRAIN_TASKS.discard)
+    except Exception as e:
+        # Never fail the save because the auto-train probe misfired.
+        logger.warning("Auto-train check failed after saving label: %s", e)
+
+    return {"status": "ok", "message": "Annotations saved successfully"}
+
+
+class AutoAnnotatePointRequest(pydantic.BaseModel):
+    filename: str
+    x_norm: float
+    y_norm: float
+    class_id: int = 0
+
+
+@router.post("/auto-annotate-point", summary="Smart Click Auto-Annotation to compute tight bounding box around clicked point")
+async def auto_annotate_point(
+    body: AutoAnnotatePointRequest,
+    token: dict = Depends(optional_bearer_token),
+):
+    """Computes a tight bounding box around an object using OpenCV contour & segmentation from a single click."""
+    import cv2
+    import numpy as np
+
+    validate_filename(body.filename)
+    filepath = os.path.join(IMAGES_DIR, body.filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image file not found")
+
+    img = cv2.imread(filepath)
+    if img is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to load image file")
+
+    h, w = img.shape[:2]
+    px = int(body.x_norm * w)
+    py = int(body.y_norm * h)
+
+    # Localized ROI around click
+    roi_w, roi_h = int(w * 0.25), int(h * 0.25)
+    rx1, ry1 = max(0, px - roi_w), max(0, py - roi_h)
+    rx2, ry2 = min(w, px + roi_w), min(h, py + roi_h)
+
+    roi = img[ry1:ry2, rx1:rx2]
+    if roi.size == 0:
+        return {
+            "status": "ok",
+            "box": BoundingBox(
+                class_id=body.class_id,
+                x_center=body.x_norm,
+                y_center=body.y_norm,
+                width=0.15,
+                height=0.15,
+            )
+        }
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blur, 30, 150)
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    click_in_roi = (px - rx1, py - ry1)
+    best_bbox = None
+    min_dist = float("inf")
+
+    for cnt in contours:
+        x, y, bw, bh = cv2.boundingRect(cnt)
+        if bw > 15 and bh > 15:
+            cx, cy = x + bw / 2.0, y + bh / 2.0
+            dist = (cx - click_in_roi[0]) ** 2 + (cy - click_in_roi[1]) ** 2
+            if dist < min_dist:
+                min_dist = dist
+                best_bbox = (rx1 + x, ry1 + y, bw, bh)
+
+    if best_bbox:
+        bx, by, bw, bh = best_bbox
+    else:
+        bx, by, bw, bh = max(0, px - 40), max(0, py - 40), 80, 80
+
+    x_center = (bx + bw / 2.0) / float(w)
+    y_center = (by + bh / 2.0) / float(h)
+    norm_w = bw / float(w)
+    norm_h = bh / float(h)
+
+    return {
+        "status": "ok",
+        "box": BoundingBox(
+            class_id=body.class_id,
+            x_center=x_center,
+            y_center=y_center,
+            width=max(0.03, norm_w),
+            height=max(0.03, norm_h),
+        )
+    }
+
+
+#: Strong refs to fire-and-forget auto-train tasks (asyncio only holds weak refs).
+_AUTO_TRAIN_TASKS: set = set()
+
+
+async def _auto_trigger_training() -> None:
+    """Background auto-train launch using a fresh, independent DB session."""
+    from database import AsyncSessionLocal
+    try:
+        async with AsyncSessionLocal() as session:
+            res = await _trigger_training_job_impl(
+                session, epochs=10, batch_size=8, force=True, triggered_by="auto_trigger"
+            )
+        if res.get("status") == "error":
+            logger.warning("Auto-triggered training did not start: %s", res.get("message"))
+    except Exception:
+        logger.exception("Auto-triggered training failed to launch")
+
+
+# ---------------------------------------------------------------------------
+# Training job orchestration
+# ---------------------------------------------------------------------------
+async def _trigger_training_job_impl(
+    db: AsyncSession,
+    epochs: int,
+    batch_size: int,
+    force: bool,
+    triggered_by: str,
+) -> Dict[str, Any]:
+    """Internal helper to execute dataset split preparation and launch the YOLO training thread."""
+    # 1. Concurrency Check
+    with _state._lock:
+        if _state.status == "training":
+            return {"status": "error", "message": "A training job is already running."}
+            
+    # 2. Count labeled images
+    all_images = [f for f in os.listdir(IMAGES_DIR) if f.endswith(".jpg")]
+    labeled_count = 0
+    labeled_pairs = []
+    
+    for f in all_images:
+        base = os.path.splitext(f)[0]
+        lbl = f"{base}.txt"
+        lbl_path = os.path.join(LABELS_DIR, lbl)
+        if os.path.exists(lbl_path) and os.path.getsize(lbl_path) > 0:
+            labeled_count += 1
+            labeled_pairs.append((f, lbl))
+            
+    if labeled_count < MIN_LABELED_IMAGES:
+        return {
+            "status": "error",
+            "message": f"Insufficient labeled images. Found {labeled_count}, but a minimum of {MIN_LABELED_IMAGES} is required."
+        }
+        
+    # 3. GPU check
+    try:
+        import torch
+        cuda_in_use = torch.cuda.is_available() and torch.cuda.memory_allocated() > 0
+    except ImportError:
+        cuda_in_use = False
+        
+    if cuda_in_use and not force:
+        return {
+            "status": "error",
+            "message": "Live inference is currently using the GPU — stop cameras or wait before training, or pass force=true to override."
+        }
+        
+    # 4. Prepare Split Directories
+    shutil.rmtree(SPLIT_DIR, ignore_errors=True)
+    
+    split_images_train = os.path.join(SPLIT_DIR, "images", "train")
+    split_images_val = os.path.join(SPLIT_DIR, "images", "val")
+    split_labels_train = os.path.join(SPLIT_DIR, "labels", "train")
+    split_labels_val = os.path.join(SPLIT_DIR, "labels", "val")
+    
+    os.makedirs(split_images_train, exist_ok=True)
+    os.makedirs(split_images_val, exist_ok=True)
+    os.makedirs(split_labels_train, exist_ok=True)
+    os.makedirs(split_labels_val, exist_ok=True)
+    
+    # Split 80/20 train/val
+    split_idx = int(len(labeled_pairs) * 0.8)
+    # Ensure at least 1 image in validation
+    if split_idx == len(labeled_pairs):
+        split_idx = max(0, len(labeled_pairs) - 1)
+        
+    train_set = labeled_pairs[:split_idx]
+    val_set = labeled_pairs[split_idx:]
+    
+    for img, lbl in train_set:
+        shutil.copy(os.path.join(IMAGES_DIR, img), os.path.join(split_images_train, img))
+        shutil.copy(os.path.join(LABELS_DIR, lbl), os.path.join(split_labels_train, lbl))
+        
+    for img, lbl in val_set:
+        shutil.copy(os.path.join(IMAGES_DIR, img), os.path.join(split_images_val, img))
+        shutil.copy(os.path.join(LABELS_DIR, lbl), os.path.join(split_labels_val, lbl))
+        
+    # Create data.yaml dynamically using DB custom labels list
+    import json
+    from models import SystemSetting
+    from sqlalchemy import select as sa_select
+
+    labels_list = DEFAULT_CLASSES
+    try:
+        res = await db.execute(sa_select(SystemSetting).where(SystemSetting.key == "training_labels"))
+        row = res.scalar_one_or_none()
+        if row:
+            labels_list = json.loads(row.value)
+    except Exception as e:
+        logger.warning("Could not read dynamic labels from db during training split: %s", e)
+
+    data_yaml = os.path.join(SPLIT_DIR, "data.yaml")
+    split_dir_formatted = SPLIT_DIR.replace('\\', '/')
+    with open(data_yaml, "w") as f:
+        f.write(f"path: {split_dir_formatted}\n")
+        f.write("train: images/train\n")
+        f.write("val: images/val\n")
+        f.write("names:\n")
+        for lbl in labels_list:
+            f.write(f"  {lbl['id']}: {lbl['name']}\n")
+
+    # 5. Determine next versioned model file name.
+    #    NOTE: this used to write to backend/detection/ (a directory that does
+    #    not exist). The detection process resolves VCC_MODEL_PATH relative to
+    #    the repo root, so weights are published there. See training_paths.py.
+    os.makedirs(TRAINED_MODEL_DIR, exist_ok=True)
+    v = 1
+    while os.path.exists(os.path.join(TRAINED_MODEL_DIR, f"yolo11s_custom_v{v}.pt")):
+        v += 1
+    versioned_name = f"yolo11s_custom_v{v}.pt"
+    new_model_path = os.path.join(TRAINED_MODEL_DIR, versioned_name)
+
+    # 6. Initialize State & launch the isolated training SUBPROCESS
+    with _state._lock:
+        _state.status = "training"
+        _state.current_epoch = 0
+        _state.total_epochs = epochs
+        _state.metrics = {}
+        _state.logs = ["Starting dataset preparation...", f"Total train files: {len(train_set)}, val files: {len(val_set)}"]
+        _state.cancel_requested = False
+        _state.new_model_name = None
+        _state.stderr_tail.clear()
+
+        try:
+            _state.process = _spawn_training(
+                epochs, batch_size, data_yaml, new_model_path, versioned_name
+            )
+        except Exception as e:
+            _state.status = "failed"
+            _state.process = None
+            _append_log_locked(f"ERROR: Could not start training subprocess: {e}")
+            logger.exception("Failed to spawn training subprocess")
+            return {"status": "error", "message": f"Could not start training subprocess: {e}"}
+
+    logger.info(
+        "Training subprocess started (pid=%s) -> %s", _state.process.pid if _state.process else "?", new_model_path
+    )
+
+    # Log audit event
+    from audit import log_action
+    await log_action(
+        db,
+        triggered_by,
+        "TRAINING_STARTED",
+        f"Model training started. Targets {epochs} epochs."
+    )
+    return {"status": "training", "message": "Training started successfully"}
+
+
+@router.post("/train", response_model=Dict[str, Any], summary="Trigger custom YOLO training run (Admin Only)")
+async def start_training(
+    body: TrainRequest,
+    db: AsyncSession = Depends(get_db),
+    token: dict = Depends(optional_bearer_token),
+):
+    """Start custom model training. Requires admin role."""
+    role = token.get("role")
+    if role != UserRole.admin.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin users can trigger model training",
+        )
+        
+    res = await _trigger_training_job_impl(
+        db=db,
+        epochs=body.epochs,
+        batch_size=body.batch_size,
+        force=body.force,
+        triggered_by=token.get("sub", "admin")
+    )
+    
+    if res.get("status") == "error":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=res.get("message")
+        )
+        
+    return res
+
+
+@router.get("/status", response_model=TrainingStatus, summary="Get current training status")
+async def get_training_status(token: dict = Depends(optional_bearer_token)):
+    """Return status of background training task."""
+    with _state._lock:
+        return TrainingStatus(
+            status=_state.status,
+            current_epoch=_state.current_epoch,
+            total_epochs=_state.total_epochs,
+            metrics=_state.metrics,
+            logs=_state.logs,
+            new_model_name=_state.new_model_name
+        )
+
+@router.post("/cancel", response_model=Dict[str, Any], summary="Cancel in-progress training job")
+async def cancel_training(
+    db: AsyncSession = Depends(get_db),
+    token: dict = Depends(optional_bearer_token),
+):
+    """Cancel in-progress training. Requires admin role."""
+    role = token.get("role")
+    if role != UserRole.admin.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin users can cancel training",
+        )
+        
+    with _state._lock:
+        if _state.status != "training":
+            return {"status": "ok", "message": "No active training job found to cancel"}
+
+        _state.cancel_requested = True
+        _state.status = "cancelled"
+        _append_log_locked("Cancellation requested by administrator. Aborting...")
+        proc = _state.process
+
+    # Actually kill the worker. Done off the event loop so the endpoint returns
+    # immediately even if the process needs the full grace period + SIGKILL.
+    if proc is not None:
+        threading.Thread(target=_terminate_process, args=(proc,), daemon=True).start()
+
+    # Log audit event safely without raising 500 errors if audit table commit fails
+    try:
+        from audit import log_action
+        await log_action(
+            db,
+            token.get("sub", "admin"),
+            "TRAINING_CANCELLED",
+            "A training job was manually aborted by administrator."
+        )
+    except Exception as e:
+        logger.warning("Could not record audit log for training cancellation: %s", e)
+    
+    return {"status": "ok", "message": "Cancellation command sent"}
+

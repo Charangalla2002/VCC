@@ -68,7 +68,70 @@ api.interceptors.response.use(
       } catch (refreshError) {
         processPendingQueue(refreshError, null)
         clearTokens()
-        window.location.href = '/login'
+        if (window.location.port !== '5174') {
+          window.location.href = '/login'
+        }
+        return Promise.reject(refreshError)
+      } finally {
+        _isRefreshing = false
+      }
+    }
+
+    return Promise.reject(error)
+  },
+)
+
+const mainApiUrl = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`
+const trainingApiUrl = import.meta.env.VITE_TRAINING_API_URL || mainApiUrl.replace(/(:\d+)?\/?$/, ':8002')
+
+export const trainingApi = axios.create({
+  baseURL: trainingApiUrl,
+  withCredentials: true,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+})
+
+trainingApi.interceptors.request.use(
+  (config) => {
+    const token = getAccessToken()
+    if (token) {
+      config.headers['Authorization'] = `Bearer ${token}`
+    }
+    return config
+  },
+  (error) => Promise.reject(error),
+)
+
+trainingApi.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config
+
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      if (_isRefreshing) {
+        return new Promise((resolve, reject) => {
+          _pendingQueue.push({ resolve, reject })
+        }).then((token) => {
+          originalRequest.headers['Authorization'] = `Bearer ${token}`
+          return trainingApi(originalRequest)
+        }).catch(Promise.reject.bind(Promise))
+      }
+
+      originalRequest._retry = true
+      _isRefreshing = true
+
+      try {
+        const newToken = await refreshAccessToken()
+        processPendingQueue(null, newToken)
+        originalRequest.headers['Authorization'] = `Bearer ${newToken}`
+        return trainingApi(originalRequest)
+      } catch (refreshError) {
+        processPendingQueue(refreshError, null)
+        clearTokens()
+        if (window.location.port !== '5174') {
+          window.location.href = '/login'
+        }
         return Promise.reject(refreshError)
       } finally {
         _isRefreshing = false

@@ -241,7 +241,7 @@ def sqlite_file_path(url: str) -> str | None:
 def install_sqlite_pragmas(engine: AsyncEngine) -> None:
     """Apply WAL / busy_timeout / foreign_keys on every new SQLite connection.
 
-    Two processes write to this database (API :8000, the
+    Three processes write to this database (API :8000, training app :8002, the
     scheduler). WAL lets readers run while a writer holds the lock, and
     busy_timeout makes a contended writer wait instead of failing instantly with
     "database is locked". foreign_keys=ON is required for the schema's

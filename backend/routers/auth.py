@@ -42,7 +42,7 @@ def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
         value=refresh_token,
         httponly=True,
         secure=COOKIE_SECURE,
-        samesite="lax",
+        samesite="strict",
         path="/auth/refresh",
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 86_400,
     )
@@ -95,16 +95,6 @@ async def login(
     _set_refresh_cookie(response, refresh_token)
 
     return Token(access_token=access_token, token_type="bearer")
-
-
-@router.options("/login", summary="CORS preflight for login")
-async def options_login():
-    return Response(status_code=200)
-
-
-@router.options("/refresh", summary="CORS preflight for token refresh")
-async def options_refresh():
-    return Response(status_code=200)
 
 
 @router.post(

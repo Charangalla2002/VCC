@@ -220,13 +220,8 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # CORS middleware
 # ---------------------------------------------------------------------------
 
-_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
-ALLOWED_ORIGINS = list(set(
-    [o.strip() for o in _raw_origins.split(",") if o.strip()] + 
-    ["http://localhost:5173", "http://127.0.0.1:5173"]
-))
-
-logger.info("CORS allowed origins (Port 8000): %s", ALLOWED_ORIGINS)
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174,http://localhost:3000")
+ALLOWED_ORIGINS = list(set([o.strip() for o in _raw_origins.split(",") if o.strip()] + ["http://localhost:5174"]))
 
 app.add_middleware(
     CORSMiddleware,
@@ -235,22 +230,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-from starlette.requests import Request
-from starlette.responses import Response
-
-@app.middleware("http")
-async def handle_options_preflight(request: Request, call_next):
-    if request.method == "OPTIONS":
-        origin = request.headers.get("origin")
-        response = Response(status_code=200)
-        if origin and (origin in ALLOWED_ORIGINS or origin.startswith("http://localhost:") or origin.startswith("http://127.0.0.1:")):
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Access-Control-Allow-Credentials"] = "true"
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-            response.headers["Access-Control-Allow-Headers"] = request.headers.get("access-control-request-headers", "*")
-        return response
-    return await call_next(request)
 
 # SlowAPI middleware must be added AFTER CORSMiddleware
 app.add_middleware(SlowAPIMiddleware)
