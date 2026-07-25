@@ -264,7 +264,6 @@ export default function Sidebar({ collapsed, onToggle, connectionStatus = 'disco
         <ul className="space-y-0.5">
           {navItems.filter(item => {
             const role = getUserRole()
-            if (item.label === 'Training Studio' && role !== 'admin') return false
             if (item.label === 'Users' && role !== 'admin') return false
             if (item.label === 'Audit Logs' && role !== 'admin') return false
             return true
