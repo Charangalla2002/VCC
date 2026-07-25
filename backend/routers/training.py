@@ -103,7 +103,10 @@ DEFAULT_CLASSES = [
 # ---------------------------------------------------------------------------
 
 @router.get("/labels", response_model=List[LabelClass], summary="Get active training label classes")
-async def get_training_labels(db: AsyncSession = Depends(get_db)):
+async def get_training_labels(
+    db: AsyncSession = Depends(get_db),
+    token: dict = Depends(optional_bearer_token),
+):
     """Retrieve active list of custom label classes, falling back to default 5 classes if unset."""
     import json
     from models import SystemSetting

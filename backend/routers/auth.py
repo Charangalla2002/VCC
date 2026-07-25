@@ -97,6 +97,16 @@ async def login(
     return Token(access_token=access_token, token_type="bearer")
 
 
+@router.options("/login", summary="CORS preflight for login")
+async def options_login():
+    return Response(status_code=200)
+
+
+@router.options("/refresh", summary="CORS preflight for token refresh")
+async def options_refresh():
+    return Response(status_code=200)
+
+
 @router.post(
     "/refresh",
     response_model=TokenRefresh,
