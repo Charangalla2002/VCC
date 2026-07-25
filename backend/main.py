@@ -220,10 +220,10 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # CORS middleware
 # ---------------------------------------------------------------------------
 
-_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174")
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
 ALLOWED_ORIGINS = list(set(
     [o.strip() for o in _raw_origins.split(",") if o.strip()] + 
-    ["http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173", "http://127.0.0.1:5174"]
+    ["http://localhost:5173", "http://127.0.0.1:5173"]
 ))
 
 logger.info("CORS allowed origins (Port 8000): %s", ALLOWED_ORIGINS)
