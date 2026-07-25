@@ -57,7 +57,7 @@ rather than hard-coding keeps the two from drifting apart when either is tuned.
 """
 
 
-CONF_THRESHOLD: float = float(os.getenv("VCC_CONF", "0.45"))
+CONF_THRESHOLD: float = float(os.getenv("VCC_CONF", "0.25"))
 """Minimum YOLO confidence score to keep a detection."""
 
 IOU_THRESHOLD: float = float(os.getenv("VCC_IOU", "0.45"))
@@ -99,10 +99,11 @@ DEFAULT_DIRECTION: str = os.getenv("VCC_DEFAULT_DIRECTION", "both")
 DEFAULT_LINE_Y: float = float(os.getenv("VCC_DEFAULT_LINE_Y", "0.5"))
 
 # ---------------------------------------------------------------------------
-# Vehicle class mapping  (COCO class ids → label strings)
+# Vehicle class mapping  (COCO class ids / custom class ids → label strings)
 # ---------------------------------------------------------------------------
 
 VEHICLE_CLASS_MAP: dict[int, str] = {
+    0: "auto",
     1: "bicycle",
     2: "car",
     3: "motorcycle",

@@ -63,9 +63,10 @@ export default function TrainingStudio() {
   const [classLabels, setClassLabels] = useState({
     0: { name: 'Car', color: 'border-[#00d4ff] text-[#00d4ff] bg-[#00d4ff]/10' },
     1: { name: 'Motorcycle', color: 'border-[#7c3aed] text-[#7c3aed] bg-[#7c3aed]/10' },
-    2: { name: 'Bus', color: 'border-[#10b981] text-[#10b981] bg-[#10b981]/10' },
-    3: { name: 'Truck', color: 'border-[#f59e0b] text-[#f59e0b] bg-[#f59e0b]/10' },
-    4: { name: 'Bicycle', color: 'border-[#f97316] text-[#f97316] bg-[#f97316]/10' }
+    2: { name: 'Auto-Rickshaw', color: 'border-[#ec4899] text-[#ec4899] bg-[#ec4899]/10' },
+    3: { name: 'Bus', color: 'border-[#10b981] text-[#10b981] bg-[#10b981]/10' },
+    4: { name: 'Truck', color: 'border-[#f59e0b] text-[#f59e0b] bg-[#f59e0b]/10' },
+    5: { name: 'Bicycle', color: 'border-[#f97316] text-[#f97316] bg-[#f97316]/10' }
   })
   const [newLabelName, setNewLabelName] = useState('')
   const [isLabelSubmitting, setIsLabelSubmitting] = useState(false)

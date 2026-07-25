@@ -990,6 +990,22 @@ async def run_camera(
                         cls_raw = t.cls
                         cls_id  = int(cls_raw.item() if hasattr(cls_raw, "item") else cls_raw)
                         label   = config.VEHICLE_CLASS_MAP.get(cls_id, "vehicle")
+
+                        # Smart Indian Traffic Heuristic: Auto-Rickshaws misclassified as 'truck' or 'car' by standard COCO YOLO
+                        if label in ("truck", "car"):
+                            try:
+                                bx1, by1, bx2, by2 = float(box[0]), float(box[1]), float(box[2]), float(box[3])
+                                bw = max(1.0, bx2 - bx1)
+                                bh = max(1.0, by2 - by1)
+                                frame_w = frame.shape[1]
+                                box_area_ratio = (bw * bh) / float(frame_w * frame_h)
+                                aspect_ratio = bw / bh
+                                # Auto-rickshaws detected as 'truck' or 'car' have compact area (< 7% of frame), aspect ratio 0.55 - 1.25, and height < 220px
+                                if label == "truck" and box_area_ratio < 0.075 and 0.55 <= aspect_ratio <= 1.25 and bh < 220:
+                                    label = "auto"
+                            except Exception:
+                                pass
+
                         last_dir: str | None = None
                         
                         # Check if this track was counted in any of the lines

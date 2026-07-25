@@ -86,9 +86,10 @@ class LabelClass(pydantic.BaseModel):
 DEFAULT_CLASSES = [
     {"id": 0, "name": "car", "color": "border-[#00d4ff] text-[#00d4ff] bg-[#00d4ff]/10"},
     {"id": 1, "name": "motorcycle", "color": "border-[#7c3aed] text-[#7c3aed] bg-[#7c3aed]/10"},
-    {"id": 2, "name": "bus", "color": "border-[#10b981] text-[#10b981] bg-[#10b981]/10"},
-    {"id": 3, "name": "truck", "color": "border-[#f59e0b] text-[#f59e0b] bg-[#f59e0b]/10"},
-    {"id": 4, "name": "bicycle", "color": "border-[#f97316] text-[#f97316] bg-[#f97316]/10"}
+    {"id": 2, "name": "auto", "color": "border-[#ec4899] text-[#ec4899] bg-[#ec4899]/10"},
+    {"id": 3, "name": "bus", "color": "border-[#10b981] text-[#10b981] bg-[#10b981]/10"},
+    {"id": 4, "name": "truck", "color": "border-[#f59e0b] text-[#f59e0b] bg-[#f59e0b]/10"},
+    {"id": 5, "name": "bicycle", "color": "border-[#f97316] text-[#f97316] bg-[#f97316]/10"}
 ]
 
 # ---------------------------------------------------------------------------

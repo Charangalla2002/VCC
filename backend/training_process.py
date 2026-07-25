@@ -158,6 +158,15 @@ def _await_process(
             append_log_locked(
                 f"SUCCESS: Training complete! New model saved to: {output_path}"
             )
+            # Auto-promote trained custom weights as active model for live detection
+            try:
+                from training_paths import REPO_ROOT
+                active_target = os.path.abspath(os.path.join(REPO_ROOT, "yolo11s_custom_latest.pt"))
+                shutil.copy(output_path, active_target)
+                os.environ["VCC_MODEL_PATH"] = active_target
+                append_log_locked(f"PROMOTED: Set active inference model to: {active_target}")
+            except Exception as e:
+                logger.warning("Could not auto-promote trained weights: %s", e)
         else:
             _state.status = "failed"
             tail = "; ".join(_state.stderr_tail) or f"worker exited with code {returncode}"
