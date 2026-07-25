@@ -152,13 +152,6 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
     scheduler.add_job(
-        auto_capture_frames,
-        trigger="interval",
-        seconds=15,
-        id="auto_capture_frames",
-        replace_existing=True,
-    )
-    scheduler.add_job(
         clean_old_logs,
         trigger="interval",
         hours=24,

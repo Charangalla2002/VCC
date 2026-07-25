@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react'
 import { Monitor, Database, Plus, Camera, Trash2, Check } from 'lucide-react'
 import { useApi } from '../hooks/useApi'
-import api, { trainingApi } from '../lib/api'
+import api from '../lib/api'
 import CountingLineEditor from '../components/CountingLineEditor'
 
 
@@ -9,7 +9,6 @@ import CountingLineEditor from '../components/CountingLineEditor'
 
 const STREAM_BASE = import.meta.env.VITE_STREAM_BASE_URL || `${window.location.protocol}//${window.location.hostname}:8001`
 const mainApiUrl = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`
-const TRAINING_BASE = import.meta.env.VITE_TRAINING_API_URL || mainApiUrl.replace(/(:\d+)?\/?$/, ':8002')
 
 
 export default function Devices() {

@@ -39,7 +39,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: 'index.html',
-        training: 'training.html',
       },
       output: {
         manualChunks: {

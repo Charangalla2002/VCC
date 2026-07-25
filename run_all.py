@@ -143,22 +143,6 @@ def main():
         threading.Thread(target=log_reader, args=(backend_proc.stdout, "[BACKEND]", green), daemon=True).start()
         threading.Thread(target=log_reader, args=(backend_proc.stderr, "[BACKEND]", green), daemon=True).start()
 
-        # 1b. Start Training Dedicated Server
-        print(f"{magenta}[SYSTEM] Starting Training Dedicated Server (Port 8002)...{reset}")
-        training_proc = subprocess.Popen(
-            [venv_python, "-m", "uvicorn", "training_app:app", "--host", "0.0.0.0", "--port", "8002"],
-            cwd="backend",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            env=env
-        )
-        processes.append(("TRAINING", training_proc))
-        
-        threading.Thread(target=log_reader, args=(training_proc.stdout, "[TRAINING]", magenta), daemon=True).start()
-        threading.Thread(target=log_reader, args=(training_proc.stderr, "[TRAINING]", magenta), daemon=True).start()
-
         time.sleep(2)
 
         # 2. Start Detection Layer
@@ -195,30 +179,11 @@ def main():
         threading.Thread(target=log_reader, args=(frontend_proc.stdout, "[FRONTEND]", cyan), daemon=True).start()
         threading.Thread(target=log_reader, args=(frontend_proc.stderr, "[FRONTEND]", cyan), daemon=True).start()
 
-        # 4. Start Isolated Training Studio UI
-        print(f"{magenta}[SYSTEM] Starting Isolated Training Studio UI (Vite, Port 5174)...{reset}")
-        training_frontend_proc = subprocess.Popen(
-            [npm_cmd, "run", "dev:training"] if not use_shell else f"{npm_cmd} run dev:training",
-            cwd="frontend",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            env=env,
-            shell=use_shell
-        )
-        processes.append(("TRAINING-UI", training_frontend_proc))
-
-        threading.Thread(target=log_reader, args=(training_frontend_proc.stdout, "[TRAINING-UI]", magenta), daemon=True).start()
-        threading.Thread(target=log_reader, args=(training_frontend_proc.stderr, "[TRAINING-UI]", magenta), daemon=True).start()
-
-        print(f"\n{green}[SYSTEM] All 5 microservices running! Press Ctrl+C to terminate all services.{reset}\n")
+        print(f"\n{green}[SYSTEM] All 3 core VCC services running! Press Ctrl+C to terminate all services.{reset}\n")
 
         if wsl_ip:
             print(f"{cyan}➜ Dashboard (WSL):    http://{wsl_ip}:5173/{reset}")
-            print(f"{cyan}➜ Dashboard (Local):  http://localhost:5173/{reset}")
-            print(f"{magenta}➜ Training UI (WSL):  http://{wsl_ip}:5174/{reset}")
-            print(f"{magenta}➜ Training UI (Local):http://localhost:5174/{reset}\n")
+            print(f"{cyan}➜ Dashboard (Local):  http://localhost:5173/{reset}\n")
 
         # Monitor loop
         while True:

@@ -56,7 +56,6 @@ const navItems = [
     ]
   },
   { label: 'Devices',           path: '/devices',     icon: Monitor },
-  { label: 'Training Studio',   path: 'http://localhost:5174', icon: Cpu, isExternal: true },
   { label: 'Users',             path: '/users',       icon: User },
   { label: 'Audit Logs',        path: '/logs',        icon: FileText },
   { label: 'Settings',          path: '/settings',    icon: Settings },
