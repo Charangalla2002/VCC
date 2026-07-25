@@ -120,9 +120,11 @@ def main():
 
     # Check node_modules in frontend
     node_modules = os.path.join("frontend", "node_modules")
+    rollup_linux = os.path.join("frontend", "node_modules", "@rollup", "rollup-linux-x64-gnu")
     npm_cmd = get_npm_cmd()
-    if not os.path.exists(node_modules):
-        print(f"{yellow}[SYSTEM] 'frontend/node_modules' missing. Running 'npm install'...{reset}")
+    need_npm_install = not os.path.exists(node_modules) or (os.name != "nt" and not os.path.exists(rollup_linux))
+    if need_npm_install:
+        print(f"{yellow}[SYSTEM] Installing/updating frontend dependencies for current platform ({os.name})...{reset}")
         try:
             subprocess.run([npm_cmd, "install"], cwd="frontend", check=True, shell=(os.name != "nt"))
         except Exception as e:
