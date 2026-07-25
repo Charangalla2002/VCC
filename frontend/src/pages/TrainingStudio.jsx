@@ -26,24 +26,7 @@ const PRESET_COLORS = [
 export default function TrainingStudio() {
   const [activeTab, setActiveTab] = useState('dataset') // dataset | labeler | training
   const { data: camerasData, loading: camerasLoading, error: camerasError, refetch: refetchCameras } = useApi('/api/cameras')
-  const [fallbackCameras, setFallbackCameras] = useState([])
-
-  useEffect(() => {
-    fetch('/api/cameras')
-      .then(res => res.json())
-      .then(data => {
-        const items = Array.isArray(data) ? data : (data?.items ?? [])
-        if (items.length > 0) setFallbackCameras(items)
-      })
-      .catch(() => {})
-  }, [])
-
-  const cameras = (Array.isArray(camerasData) && camerasData.length > 0)
-    ? camerasData
-    : (camerasData?.items && camerasData.items.length > 0)
-      ? camerasData.items
-      : fallbackCameras
-
+  const cameras = Array.isArray(camerasData) ? camerasData : (camerasData?.items ?? [])
   const { data: imagesData, refetch: refetchImages } = useApi('/api/training/images', {}, [], { apiInstance: trainingApi })
   const { data: trainingStatus, refetch: refetchStatus } = useApi('/api/training/status', {}, [], { apiInstance: trainingApi })
 
@@ -607,54 +590,86 @@ export default function TrainingStudio() {
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             {/* Capture Panel */}
             <div className="lg:col-span-4 bg-bg-card rounded-xl border border-bg-border p-5 shadow-card space-y-4 h-fit">
-              <h2 className="text-text-primary font-semibold flex items-center gap-2">
-                <Camera size={18} className="text-accent-cyan" />
-                Live Frame Capture
-              </h2>
+              <div className="flex items-center justify-between">
+                <h2 className="text-text-primary font-semibold flex items-center gap-2">
+                  <Camera size={18} className="text-accent-cyan" />
+                  Live Frame Capture
+                </h2>
+                {/* 3-Point System Health Dots */}
+                <div className="flex items-center gap-2 text-[10px] bg-bg px-2.5 py-1 rounded-full border border-bg-border">
+                  <span title="Backend API (Port 8000)" className={`w-2 h-2 rounded-full ${!camerasError ? 'bg-accent-green animate-pulse' : 'bg-accent-red'}`} />
+                  <span title="Stream Server (Port 8001)" className="w-2 h-2 rounded-full bg-accent-cyan animate-pulse" />
+                  <span title="Training Worker (Port 8002)" className="w-2 h-2 rounded-full bg-accent-purple animate-pulse" />
+                </div>
+              </div>
+              
               <p className="text-xs text-text-secondary leading-relaxed">
                 Select a camera and enable auto-capture to automatically collect frames for training.
               </p>
-              <div className="space-y-3">
-                {camerasLoading ? (
-                  <div className="text-xs text-text-muted flex items-center gap-2 py-2">
-                    <RefreshCw size={13} className="animate-spin text-accent-cyan" />
-                    <span>Connecting to camera service...</span>
-                  </div>
-                ) : camerasError || cameras.length === 0 ? (
-                  <div className="rounded-lg border border-accent-amber/30 bg-accent-amber/5 p-3 space-y-2">
-                    <div className="flex items-center justify-between text-xs text-accent-amber font-semibold">
-                      <span className="flex items-center gap-1.5">
-                        <Info size={14} />
-                        No active cameras detected
-                      </span>
-                      <button 
-                        onClick={refetchCameras}
-                        className="flex items-center gap-1 text-[11px] underline hover:text-white transition-colors"
-                      >
-                        <RefreshCw size={11} /> Retry
-                      </button>
-                    </div>
-                    <p className="text-[11px] text-text-muted">
-                      {camerasError ? `Error: ${camerasError}` : 'Ensure main backend service (Port 8000) is running and cameras are configured.'}
-                    </p>
-                  </div>
-                ) : null}
 
-                <select 
-                  value={String(selectedCamera ?? '')} 
-                  onChange={(e) => setSelectedCamera(e.target.value)}
-                  className="bg-bg border border-bg-border rounded-lg px-3 py-2 text-sm text-text-primary w-full focus:outline-none focus:border-accent-cyan"
+              {/* Differentiated Error / Warning Banners */}
+              {camerasError && (
+                <div className={`p-3 rounded-lg border text-xs flex items-center justify-between gap-2
+                  ${String(camerasError).includes('401') 
+                    ? 'bg-amber-500/10 border-amber-500/30 text-amber-300' 
+                    : 'bg-accent-red/10 border-accent-red/30 text-accent-red'}`}
                 >
-                  <option value="">Select Camera...</option>
-                  {cameras.map(cam => {
-                    const cid = String(cam.id ?? cam.camera_id)
-                    return (
-                      <option key={cid} value={cid}>
-                        {cam.name || `Camera ${cid}`} (ID: {cid})
-                      </option>
-                    )
-                  })}
-                </select>
+                  <div className="flex items-center gap-2">
+                    <Info size={14} className="flex-shrink-0" />
+                    <span>
+                      {String(camerasError).includes('401') 
+                        ? 'Authentication expired or invalid token' 
+                        : `Backend unreachable (${camerasError})`}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (String(camerasError).includes('401')) {
+                        window.location.href = 'http://localhost:5173'
+                      } else {
+                        refetchCameras()
+                      }
+                    }}
+                    className="px-2 py-1 rounded bg-bg border border-bg-border text-[10px] font-semibold hover:border-accent-cyan transition-colors"
+                  >
+                    {String(camerasError).includes('401') ? 'Re-Sync Auth' : 'Retry'}
+                  </button>
+                </div>
+              )}
+
+              {!camerasLoading && !camerasError && cameras.length === 0 && (
+                <div className="p-3 rounded-lg border border-bg-border bg-bg text-xs text-text-muted flex items-center gap-2">
+                  <Info size={14} />
+                  <span>No active cameras configured in the backend.</span>
+                </div>
+              )}
+
+              <div className="space-y-3">
+                <div className="flex gap-2">
+                  <select 
+                    value={selectedCamera} 
+                    onChange={(e) => setSelectedCamera(e.target.value)}
+                    disabled={camerasLoading}
+                    className="bg-bg border border-bg-border rounded-lg px-3 py-2 text-sm text-text-primary flex-1 focus:outline-none focus:border-accent-cyan disabled:opacity-50"
+                  >
+                    <option value="">{camerasLoading ? 'Loading cameras…' : 'Select Camera...'}</option>
+                    {cameras.map(cam => {
+                      const cid = cam.id ?? cam.camera_id
+                      return (
+                        <option key={cid} value={cid}>
+                          {cam.name || `Camera ${cid}`} (ID: {cid})
+                        </option>
+                      )
+                    })}
+                  </select>
+                  <button
+                    onClick={() => refetchCameras()}
+                    title="Refresh camera list"
+                    className="p-2 rounded-lg bg-bg border border-bg-border text-text-secondary hover:text-accent-cyan hover:border-accent-cyan/40 transition-all"
+                  >
+                    <RefreshCw size={15} className={camerasLoading ? 'animate-spin' : ''} />
+                  </button>
+                </div>
 
                 {/* Live Camera Stream Preview Box */}
                 {selectedCamera && (

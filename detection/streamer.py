@@ -437,6 +437,35 @@ async def _snapshot_handler(
             return web.json_response({"error": str(exc)}, status=500)
 
 
+# Single fixed-size raw frame slot per camera (overwritten each frame, 0 memory leak)
+_RAW_FRAME_SLOTS: dict[str, bytes] = {}
+
+def update_raw_frame(camera_id: str, frame_np: np.ndarray) -> None:
+    """Encode raw unannotated frame to JPEG and store in a single fixed-size slot per camera."""
+    try:
+        ok, buf = cv2.imencode(".jpg", frame_np, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        if ok:
+            _RAW_FRAME_SLOTS[str(camera_id)] = buf.tobytes()
+    except Exception:
+        pass
+
+async def _raw_snapshot_handler(
+    request:      web.Request,
+    frame_queues: dict[str, asyncio.Queue],
+) -> web.Response:
+    """Return a single JPEG snapshot of the UNANNOTATED (clean) frame for *camera_id*."""
+    camera_id = request.match_info["camera_id"]
+    raw_jpeg = _RAW_FRAME_SLOTS.get(str(camera_id))
+    if raw_jpeg is not None:
+        return web.Response(
+            body=raw_jpeg,
+            content_type="image/jpeg",
+            headers={"Access-Control-Allow-Origin": "*"}
+        )
+    # Fallback to annotated snapshot if raw frame not cached yet
+    return await _snapshot_handler(request, frame_queues)
+
+
 # ---------------------------------------------------------------------------
 # Application factory
 # ---------------------------------------------------------------------------
@@ -473,6 +502,10 @@ def build_app(frame_queues: dict[str, asyncio.Queue]) -> web.Application:
     app.router.add_get(
         "/snapshot/{camera_id}",
         lambda req: _snapshot_handler(req, frame_queues),
+    )
+    app.router.add_get(
+        "/raw_snapshot/{camera_id}",
+        lambda req: _raw_snapshot_handler(req, frame_queues),
     )
     return app
 

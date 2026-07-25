@@ -121,15 +121,12 @@ async def require_bearer_token(
 _optional_bearer_scheme = HTTPBearer(auto_error=False)
 
 
-async def optional_bearer_token(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_optional_bearer_scheme),
-) -> dict:
+async def optional_bearer_token(request: Request) -> dict:
     """Dependency: validate Bearer JWT if present, or return admin payload for local studio tools."""
-    if credentials is None or not credentials.credentials:
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
         return {"sub": "admin", "role": "admin"}
-    token = credentials.credentials.strip()
-    if not token or token in ("null", "undefined", "None"):
-        return {"sub": "admin", "role": "admin"}
+    token = auth_header.split(" ", 1)[1]
     try:
         return decode_token(token, expected_type="access")
     except Exception:

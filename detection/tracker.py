@@ -913,6 +913,13 @@ async def run_camera(
 
                 frame_h = frame.shape[0]
 
+                # Push clean unannotated frame to streamer fixed-size raw frame slot
+                try:
+                    from streamer import update_raw_frame
+                    update_raw_frame(camera_id, frame)
+                except Exception:
+                    pass
+
                 # ---- run tracker ----------------------------------------
                 # Offload the blocking YOLO call to the default thread-pool
                 # executor so we don't starve the event loop.

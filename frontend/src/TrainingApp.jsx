@@ -13,6 +13,8 @@ export default function TrainingApp() {
         const urlToken = params.get('token')
         if (urlToken) {
           localStorage.setItem('vcc_access_token', urlToken)
+          // Security Scrubbing: Remove token from URL bar immediately to prevent history/Referer leakage
+          window.history.replaceState({}, document.title, window.location.pathname)
         }
         await refreshAccessToken()
       } catch (err) {
@@ -22,6 +24,17 @@ export default function TrainingApp() {
       }
     }
     initAuth()
+  }, [])
+
+  // Cross-tab logout listener
+  useEffect(() => {
+    const handleStorage = (e) => {
+      if (e.key === 'vcc_access_token' && !e.newValue) {
+        window.location.href = 'http://localhost:5173'
+      }
+    }
+    window.addEventListener('storage', handleStorage)
+    return () => window.removeEventListener('storage', handleStorage)
   }, [])
 
   if (initializing) {

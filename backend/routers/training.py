@@ -210,13 +210,18 @@ async def capture_frame(
 ):
     """Grabs a frame from the live stream or direct camera/video source."""
     frame_bytes = None
-    url = f"{STREAM_BASE_URL}/snapshot/{camera_id}"
+    url = f"{STREAM_BASE_URL}/raw_snapshot/{camera_id}"
+    fallback_url = f"{STREAM_BASE_URL}/snapshot/{camera_id}"
     
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(url, timeout=3.0)
             if response.status_code == 200 and response.headers.get("X-Placeholder") != "true":
                 frame_bytes = response.content
+            else:
+                response = await client.get(fallback_url, timeout=3.0)
+                if response.status_code == 200 and response.headers.get("X-Placeholder") != "true":
+                    frame_bytes = response.content
     except Exception:
         pass
 
@@ -247,12 +252,17 @@ async def capture_frame(
 async def _capture_single(camera_id: str, db: AsyncSession) -> Dict[str, Any]:
     """Internal helper: capture one frame from given camera_id using live stream or direct source fallback."""
     frame_bytes = None
-    url = f"{STREAM_BASE_URL}/snapshot/{camera_id}"
+    url = f"{STREAM_BASE_URL}/raw_snapshot/{camera_id}"
+    fallback_url = f"{STREAM_BASE_URL}/snapshot/{camera_id}"
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(url, timeout=3.0)
             if response.status_code == 200 and response.headers.get("X-Placeholder") != "true":
                 frame_bytes = response.content
+            else:
+                response = await client.get(fallback_url, timeout=3.0)
+                if response.status_code == 200 and response.headers.get("X-Placeholder") != "true":
+                    frame_bytes = response.content
     except Exception:
         pass
 
