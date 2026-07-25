@@ -81,8 +81,8 @@ api.interceptors.response.use(
   },
 )
 
-const mainApiUrl = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`
-const trainingApiUrl = import.meta.env.VITE_TRAINING_API_URL || mainApiUrl.replace(/(:\d+)?\/?$/, ':8002')
+const mainApiUrl = import.meta.env.VITE_API_URL || ''
+const trainingApiUrl = import.meta.env.VITE_TRAINING_API_URL || mainApiUrl
 
 export const trainingApi = axios.create({
   baseURL: trainingApiUrl,

@@ -3,8 +3,8 @@ import { Cpu, Video, Layers, Plus, Play, Square, RefreshCw, Check, Trash2, Camer
 import { useApi } from '../hooks/useApi'
 import api, { trainingApi } from '../lib/api'
 
-const mainApiUrl = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:8000`
-const TRAINING_BASE = import.meta.env.VITE_TRAINING_API_URL || mainApiUrl.replace(/(:\d+)?\/?$/, ':8002')
+const mainApiUrl = import.meta.env.VITE_API_URL || ''
+const TRAINING_BASE = import.meta.env.VITE_TRAINING_API_URL || mainApiUrl
 const STREAM_BASE_URL = import.meta.env.VITE_STREAM_BASE_URL || `${window.location.protocol}//${window.location.hostname}:8001`
 
 const MIN_LABELED_IMAGES = 5

@@ -14,6 +14,8 @@ export default defineConfig({
             !path.startsWith('/auth') &&
             !path.startsWith('/ws') &&
             !path.startsWith('/stream') &&
+            !path.startsWith('/snapshot') &&
+            !path.startsWith('/raw_snapshot') &&
             !path.startsWith('/src') &&
             !path.startsWith('/@') &&
             !path.includes('.')
@@ -42,6 +44,14 @@ export default defineConfig({
         ws: true,
       },
       '/stream': {
+        target: process.env.VITE_STREAM_BASE_URL || 'http://localhost:8001',
+        changeOrigin: true,
+      },
+      '/snapshot': {
+        target: process.env.VITE_STREAM_BASE_URL || 'http://localhost:8001',
+        changeOrigin: true,
+      },
+      '/raw_snapshot': {
         target: process.env.VITE_STREAM_BASE_URL || 'http://localhost:8001',
         changeOrigin: true,
       },

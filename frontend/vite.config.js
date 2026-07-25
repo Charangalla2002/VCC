@@ -23,6 +23,14 @@ export default defineConfig({
         target: process.env.VITE_STREAM_BASE_URL || 'http://localhost:8001',
         changeOrigin: true,
       },
+      '/snapshot': {
+        target: process.env.VITE_STREAM_BASE_URL || 'http://localhost:8001',
+        changeOrigin: true,
+      },
+      '/raw_snapshot': {
+        target: process.env.VITE_STREAM_BASE_URL || 'http://localhost:8001',
+        changeOrigin: true,
+      },
     },
   },
   build: {
