@@ -68,9 +68,7 @@ api.interceptors.response.use(
       } catch (refreshError) {
         processPendingQueue(refreshError, null)
         clearTokens()
-        if (window.location.port !== '5174') {
-          window.location.href = '/login'
-        }
+        window.location.href = '/login'
         return Promise.reject(refreshError)
       } finally {
         _isRefreshing = false
