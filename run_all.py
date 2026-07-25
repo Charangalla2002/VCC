@@ -60,15 +60,27 @@ def check_port_in_use(port: int) -> bool:
 
 def main():
     # Locate virtualenv python
-    venv_python = (
-        os.path.join("backend", "venv", "Scripts", "python.exe")
-        if os.name == "nt"
-        else os.path.join("backend", "venv", "bin", "python")
-    )
-    if not os.path.isfile(venv_python):
+    # Check both Windows (Scripts/python.exe) and Unix (bin/python) layouts
+    # because WSL (os.name='posix') can run a Windows-created venv via .exe interop.
+    venv_candidates = [
+        os.path.join("backend", "venv", "bin", "python"),
+        os.path.join("backend", "venv", "Scripts", "python.exe"),
+    ]
+    if os.name == "nt":
+        # On native Windows, prefer Scripts first
+        venv_candidates.reverse()
+
+    venv_python = None
+    for candidate in venv_candidates:
+        if os.path.isfile(candidate):
+            venv_python = os.path.abspath(candidate)
+            break
+
+    if venv_python is None:
         venv_python = sys.executable
+        print(f"\033[33m[SYSTEM WARN] No virtualenv found at backend/venv — using system Python: {venv_python}\033[0m")
     else:
-        venv_python = os.path.abspath(venv_python)
+        print(f"\033[32m[SYSTEM] Using Python: {venv_python}\033[0m")
 
     # Check for GStreamer disable option in backend/.env
     disable_gst = False
