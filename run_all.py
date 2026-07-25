@@ -59,16 +59,18 @@ def check_port_in_use(port: int) -> bool:
         return False
 
 def main():
-    # Locate virtualenv python
-    venv_python = (
-        os.path.join("backend", "venv", "Scripts", "python.exe")
-        if os.name == "nt"
-        else os.path.join("backend", "venv", "bin", "python")
-    )
-    if not os.path.isfile(venv_python):
-        venv_python = sys.executable
-    else:
-        venv_python = os.path.abspath(venv_python)
+    # Locate virtualenv python across Windows, WSL, and Linux
+    candidates = [
+        os.path.join("backend", "venv", "Scripts", "python.exe"),
+        os.path.join("backend", "venv", "Scripts", "python"),
+        os.path.join("backend", "venv", "bin", "python"),
+        os.path.join("backend", "venv", "bin", "python3"),
+    ]
+    venv_python = sys.executable
+    for c in candidates:
+        if os.path.isfile(c):
+            venv_python = os.path.abspath(c)
+            break
 
     # Check for GStreamer disable option in backend/.env
     disable_gst = False
