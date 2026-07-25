@@ -14,10 +14,51 @@ process never loads them, keeping the live-detection backend lightweight.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import shutil
 import sys
+
+
+# ---------------------------------------------------------------------------
+# Safe pipe wrapper — ultralytics' tqdm writes \r, ANSI codes, and bare \n to
+# stderr.  On Windows, a text-mode subprocess pipe raises
+# ``OSError: [Errno 22] Invalid argument`` for some of those writes.  This
+# wrapper silently absorbs the error so the training loop keeps running.
+# ---------------------------------------------------------------------------
+class _SafePipeWriter(io.TextIOBase):
+    """Drop-in replacement for sys.stderr that swallows broken-pipe / invalid-arg errors."""
+
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
+
+    def write(self, s):
+        try:
+            return self._wrapped.write(s)
+        except OSError:
+            return len(s)  # pretend the write succeeded
+
+    def flush(self):
+        try:
+            self._wrapped.flush()
+        except OSError:
+            pass
+
+    def fileno(self):
+        return self._wrapped.fileno()
+
+    @property
+    def encoding(self):
+        return getattr(self._wrapped, "encoding", "utf-8")
+
+    def isatty(self):
+        return False
+
+
+# Install the safe wrappers BEFORE any library import touches the streams.
+sys.stderr = _SafePipeWriter(sys.stderr)
+sys.stdout = _SafePipeWriter(sys.stdout)
 
 
 EVENT_PREFIX = "@@VCC "
@@ -39,14 +80,13 @@ def main() -> None:
     args = parser.parse_args()
 
     # ---- Resolve base model ------------------------------------------------
-    # Walk upward from backend/ to the repo root to find model weights.
     backend_dir = os.path.dirname(os.path.abspath(__file__))
     repo_root = os.path.dirname(backend_dir)
 
     base_model_candidates = [
         os.path.join(repo_root, "yolo11n.pt"),
         os.path.join(repo_root, "yolo11s.pt"),
-        "yolo11n.pt",  # ultralytics will download if missing
+        "yolo11n.pt",
     ]
     base_model = "yolo11n.pt"
     for candidate in base_model_candidates:
@@ -63,6 +103,9 @@ def main() -> None:
 
     # ---- Import ultralytics ------------------------------------------------
     try:
+        # Suppress tqdm in data loaders to avoid pipe write issues
+        os.environ["TQDM_DISABLE"] = "0"  # keep enabled but safe via wrapper
+
         from ultralytics import YOLO
         import torch
     except ImportError as e:
@@ -97,9 +140,7 @@ def main() -> None:
         verbose=True,
     )
 
-    # ---- Emit per-epoch events ---------------------------------------------
-    # ultralytics logs epochs internally; for structured events we emit at least
-    # a completion event.
+    # ---- Export weights -----------------------------------------------------
     best_pt = os.path.join(args.work_dir, "vcc_train", "weights", "best.pt")
     last_pt = os.path.join(args.work_dir, "vcc_train", "weights", "last.pt")
 
