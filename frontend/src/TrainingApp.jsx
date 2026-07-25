@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Cpu, ExternalLink, ShieldCheck } from 'lucide-react'
 import TrainingStudio from './pages/TrainingStudio'
-import { refreshAccessToken } from './lib/auth'
+import { refreshAccessToken, setAccessToken } from './lib/auth'
 
 export default function TrainingApp() {
   const [initializing, setInitializing] = useState(true)
@@ -12,7 +12,7 @@ export default function TrainingApp() {
         const params = new URLSearchParams(window.location.search)
         const urlToken = params.get('token')
         if (urlToken) {
-          localStorage.setItem('vcc_access_token', urlToken)
+          setAccessToken(urlToken)
           // Security Scrubbing: Remove token from URL bar immediately to prevent history/Referer leakage
           window.history.replaceState({}, document.title, window.location.pathname)
         }

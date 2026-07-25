@@ -7,19 +7,25 @@
 import axios from 'axios'
 
 // ─── Module-level private state ───────────────────────────────────────────────
-let _accessToken = null
+let _accessToken = localStorage.getItem('vcc_access_token') || null
 
 // ─── Token management ─────────────────────────────────────────────────────────
 export function setAccessToken(token) {
   _accessToken = token
+  if (token) {
+    localStorage.setItem('vcc_access_token', token)
+  } else {
+    localStorage.removeItem('vcc_access_token')
+  }
 }
 
 export function getAccessToken() {
-  return _accessToken
+  return _accessToken || localStorage.getItem('vcc_access_token') || null
 }
 
 export function clearTokens() {
   _accessToken = null
+  localStorage.removeItem('vcc_access_token')
 }
 
 export function isAuthenticated() {
