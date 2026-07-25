@@ -36,10 +36,18 @@ from counter import CrossingEvent, LineCounter, create_counters_from_config
 from gst_capture import GStreamerCapture, GST_AVAILABLE, gst_version_string
 from color_detector import detect_vehicle_color
 
+from concurrent.futures import ThreadPoolExecutor
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(
     level  = logging.INFO,
     format = "%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+)
+
+# Global shared thread pool for YOLO inference
+INFER_EXECUTOR = ThreadPoolExecutor(
+    max_workers=config.MAX_INFER_WORKERS,
+    thread_name_prefix="vcc-yolo-worker"
 )
 
 
@@ -313,12 +321,13 @@ async def _post_event(
 class _BoxWrapper:
     """Thin shim that exposes a single-index slice of an ultralytics Boxes."""
 
-    __slots__ = ("_boxes", "_idx", "color")
+    __slots__ = ("_boxes", "_idx", "color", "_scaled_xyxy")
 
-    def __init__(self, boxes: Any, idx: int, color: str = "Unknown") -> None:
+    def __init__(self, boxes: Any, idx: int, color: str = "Unknown", scaled_xyxy: Any = None) -> None:
         self._boxes = boxes
         self._idx   = idx
         self.color  = color
+        self._scaled_xyxy = scaled_xyxy
 
     @property
     def id(self) -> Any:
@@ -329,6 +338,8 @@ class _BoxWrapper:
 
     @property
     def xyxy(self) -> Any:
+        if self._scaled_xyxy is not None:
+            return self._scaled_xyxy
         return self._boxes.xyxy[self._idx]
 
     @property
@@ -776,8 +787,13 @@ async def run_camera(
         target_fps = float(os.getenv("VCC_TARGET_FPS", "10.0"))
         target_delay = 1.0 / target_fps if target_fps > 0 else 0
 
-        # Per-track temporal color voting memory
-        track_color_history: dict[int, list[str]] = {}
+        # Per-track temporal color & confidence tracking memory
+        # t_id -> dict(color=str, last_frame=int, frame_counter=int, best_conf=float, best_crop_info=tuple)
+        track_color_state: dict[int, dict[str, Any]] = {}
+
+        # Telemetry: FPS tracking
+        fps_frame_count = 0
+        fps_start_time = time.monotonic()
 
         # Reconnect backoff: 1 s doubling to RECONNECT_MAX_BACKOFF.  A camera
         # that is permanently dead must not spin at 1 Hz forever, nor flood the
@@ -805,10 +821,6 @@ async def run_camera(
                     health = _capture_health(cap)
 
                     if health == ThreadedRTSPCapture.CONNECTING:
-                        # No frame has EVER arrived and the grace window is still
-                        # open.  Releasing the capture here would tear down a
-                        # connection that is mid-negotiation, and the doubling
-                        # backoff would then keep a slow camera off-air forever.
                         if not connecting_logged:
                             logger.info(
                                 "[%s] Waiting for first frame from source...",
@@ -818,25 +830,9 @@ async def run_camera(
                         await asyncio.sleep(0.2)
                         continue
 
-                    # End of a video file.
-                    #
-                    # Keyed off is_file_source rather than an extension whitelist:
-                    # the old check listed only .mp4/.avi/.mkv, so an uploaded .mov
-                    # or .webm fell through to the reconnect ladder and was treated
-                    # as a dead camera.
-                    # Native GStreamer needs an extra test to get here. Its read()
-                    # returns (False, None) both at real EOS and on a transient
-                    # queue timeout, and only EOS clears isOpened() -- so without
-                    # that check a merely slow decoder would be mistaken for the
-                    # end of the clip. Restricted to single_pass because a looping
-                    # demo source cannot rewind a dead pipeline with cap.set(); it
-                    # relies on the reconnect ladder below to reopen and replay.
                     gst_upload_eos = using_native_gst and single_pass and not cap.isOpened()
                     if is_file_source and (not using_native_gst or gst_upload_eos):
                         eof_streak += 1
-                        # Require a few consecutive failures before declaring the
-                        # file finished, so one transient decode hiccup mid-clip
-                        # cannot truncate the run and publish a short count.
                         if single_pass and eof_streak >= EOF_CONFIRM_READS:
                             logger.info(
                                 "[%s] End of uploaded video — single pass complete. "
@@ -847,17 +843,12 @@ async def run_camera(
                             return
 
                         if not single_pass:
-                            # Live/demo file source: loop so the feed keeps playing.
                             if hasattr(cap, "set"):
                                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        # Always yield — without this the rewind path is a hot
-                        # busy-loop that starves the event loop.
                         await asyncio.sleep(0.05)
                         continue
 
                     fail_streak += 1
-                    # Log every attempt for the first few, then decreasingly
-                    # often, so a dead camera does not flood the log.
                     if fail_streak <= 3 or fail_streak % 10 == 0:
                         logger.warning(
                             "[%s] Frame read failed (attempt %d) -- retrying in %.1f s.",
@@ -874,7 +865,6 @@ async def run_camera(
 
                     await loop.run_in_executor(None, cap.release)
 
-                    # Reconnect using the same path that originally worked
                     if using_native_gst:
                         gst_cap = GStreamerCapture(source_parsed)
                         started = await loop.run_in_executor(None, gst_cap.start)
@@ -888,30 +878,21 @@ async def run_camera(
                             using_native_gst = False
                     else:
                         cap = await loop.run_in_executor(None, lambda: ThreadedRTSPCapture(source_parsed, sequential=is_file_source))
-                    # The replacement capture gets its own first-frame grace
-                    # window, so let it announce itself again.
                     connecting_logged = False
                     continue
 
-                # Recovered — reset the backoff ladder.
                 if fail_streak:
                     logger.info("[%s] Capture recovered after %d failed attempts.", camera_id, fail_streak)
                     fail_streak = 0
                     backoff     = RECONNECT_BASE_BACKOFF
-                # A good frame means we are not at EOF, so the confirmation streak
-                # must restart — otherwise scattered hiccups across a long video
-                # would accumulate and end the job early.
                 eof_streak = 0
                 connecting_logged = False
 
                 if not is_new:
-                    # Inference is outrunning capture.  Re-tracking the same
-                    # frame would feed ByteTrack a duplicate observation, so
-                    # yield briefly and wait for a genuinely new frame instead.
                     await asyncio.sleep(0.005)
                     continue
 
-                frame_h = frame.shape[0]
+                orig_h, orig_w = frame.shape[:2]
 
                 # Cache unannotated raw frame for clean training snapshots
                 try:
@@ -920,13 +901,22 @@ async def run_camera(
                 except Exception:
                     pass
 
-                # ---- run tracker ----------------------------------------
-                # Offload the blocking YOLO call to the default thread-pool
-                # executor so we don't starve the event loop.
-                loop    = asyncio.get_running_loop()
+                # ---- 1. Downscale frame for fast inference -----------------
+                infer_sz = config.INFER_IMGSZ
+                if orig_h != infer_sz or orig_w != infer_sz:
+                    infer_frame = cv2.resize(frame, (infer_sz, infer_sz), interpolation=cv2.INTER_LINEAR)
+                    scale_x = orig_w / float(infer_sz)
+                    scale_y = orig_h / float(infer_sz)
+                else:
+                    infer_frame = frame
+                    scale_x = 1.0
+                    scale_y = 1.0
+
+                # ---- 2. Run tracker in dedicated INFER_EXECUTOR -----------
+                loop = asyncio.get_running_loop()
                 results = await loop.run_in_executor(
-                    None,
-                    lambda f=frame: model.track(
+                    INFER_EXECUTOR,
+                    lambda f=infer_frame: model.track(
                         f,
                         persist    = True,
                         tracker    = config.TRACKER,
@@ -934,46 +924,77 @@ async def run_camera(
                         iou        = config.IOU_THRESHOLD,
                         classes    = list(config.VEHICLE_CLASS_MAP.keys()),
                         verbose    = False,
+                        imgsz      = infer_sz,
                     ),
                 )
 
-                # ---- collect tracks & detect vehicle colors ---------------
+                # ---- 3. Collect tracks, apply per-class conf filter & smart color detection ----
                 tracks: list[Any] = []
                 if results and results[0].boxes is not None:
                     boxes = results[0].boxes
                     for i in range(len(boxes)):
+                        cls_raw = boxes.cls[i]
+                        cls_id = int(cls_raw.item() if hasattr(cls_raw, "item") else cls_raw)
+                        cls_name = config.VEHICLE_CLASS_MAP.get(cls_id, "car")
+
+                        # Per-class confidence check (post-inference precision filter)
+                        conf_raw = boxes.conf[i]
+                        conf_val = float(conf_raw.item() if hasattr(conf_raw, "item") else conf_raw)
+                        min_conf = config.CLASS_CONF_THRESHOLDS.get(cls_name, 0.35)
+                        if conf_val < min_conf:
+                            continue  # Filter out weak detections for this specific class
+
+                        # Rescale box coordinates back to ORIGINAL frame resolution
                         box_slice = boxes.xyxy[i]
-                        b_coords = (float(box_slice[0]), float(box_slice[1]), float(box_slice[2]), float(box_slice[3]))
-                        v_color = detect_vehicle_color(frame, b_coords)
-                        
-                        # Per-track temporal color majority voting
+                        b_scaled = (
+                            float(box_slice[0]) * scale_x,
+                            float(box_slice[1]) * scale_y,
+                            float(box_slice[2]) * scale_x,
+                            float(box_slice[3]) * scale_y,
+                        )
+
+                        # Smart color detection debouncing (highest-conf frame sampling)
                         t_id = int(boxes.id[i]) if (boxes.id is not None and i < len(boxes.id)) else None
+                        v_color = "Unknown"
+
                         if t_id is not None:
-                            if t_id not in track_color_history:
-                                track_color_history[t_id] = []
-                            if v_color != "Unknown":
-                                track_color_history[t_id].append(v_color)
-                                if len(track_color_history[t_id]) > 15:
-                                    track_color_history[t_id].pop(0)
+                            st = track_color_state.setdefault(t_id, {
+                                "color": "Unknown",
+                                "frames_since_detect": config.COLOR_DETECT_INTERVAL,
+                                "best_conf": 0.0,
+                                "best_bbox": None,
+                            })
+                            st["frames_since_detect"] += 1
 
-                            if track_color_history[t_id]:
-                                from collections import Counter
-                                most_common = Counter(track_color_history[t_id]).most_common(1)
-                                if most_common:
-                                    v_color = most_common[0][0]
+                            # Update best sample candidate in the current window
+                            if conf_val > st["best_conf"]:
+                                st["best_conf"] = conf_val
+                                st["best_bbox"] = b_scaled
 
-                        tracks.append(_BoxWrapper(boxes, i, color=v_color))
+                            # Re-run color detection at the end of interval using the highest-conf view
+                            if st["frames_since_detect"] >= config.COLOR_DETECT_INTERVAL:
+                                target_bbox = st["best_bbox"] if st["best_bbox"] is not None else b_scaled
+                                st["color"] = detect_vehicle_color(frame, target_bbox)
+                                st["frames_since_detect"] = 0
+                                st["best_conf"] = 0.0
+                                st["best_bbox"] = None
 
-                # ---- count crossings ------------------------------------
-                events = counter.process_tracks(tracks, frame_h, frame_w=frame.shape[1])
+                            v_color = st["color"]
+                        else:
+                            v_color = detect_vehicle_color(frame, b_scaled)
 
-                # ---- post events to backend (fire-and-forget) -----------
+                        tracks.append(_BoxWrapper(boxes, i, color=v_color, scaled_xyxy=b_scaled))
+
+                # ---- 4. Count crossings at full original resolution -----
+                events = counter.process_tracks(tracks, orig_h, frame_w=orig_w)
+
+                # ---- 5. Post events to backend ---------------------------
                 for ev in events:
                     asyncio.ensure_future(
                         _post_event(http_client, ev, camera_config)
                     )
 
-                # ---- annotate frame -------------------------------------
+                # ---- 6. Annotate original frame --------------------------
                 annotated = frame.copy()
                 _draw_lines(annotated, counter)
                 _draw_counters(annotated, counter)
@@ -984,15 +1005,12 @@ async def run_camera(
                         if tid_raw is None:
                             continue
                         tid     = int(tid_raw.item() if hasattr(tid_raw, "item") else tid_raw)
-                        box     = t.xyxy
-                        if hasattr(box, "shape") and len(box.shape) == 2:
-                            box = box[0]
+                        box     = t.xyxy  # Returns rescaled coordinates
                         cls_raw = t.cls
                         cls_id  = int(cls_raw.item() if hasattr(cls_raw, "item") else cls_raw)
                         label   = config.VEHICLE_CLASS_MAP.get(cls_id, "vehicle")
                         last_dir: str | None = None
-                        
-                        # Check if this track was counted in any of the lines
+
                         for lid in counter.counted_down_per_line:
                             if tid in counter.counted_down_per_line[lid]:
                                 last_dir = "down"
@@ -1002,29 +1020,40 @@ async def run_camera(
                                 if tid in counter.counted_up_per_line[lid]:
                                     last_dir = "up"
                                     break
-                                    
+
                         _draw_track(
                             annotated,
                             (float(box[0]), float(box[1]), float(box[2]), float(box[3])),
                             tid, label, last_dir,
                             color_label=getattr(t, "color", None)
                         )
-
                     except Exception:
                         pass
 
-                # ---- push annotated frame to queue ----------------------
+                # ---- 7. Push annotated frame to queue --------------------
                 q = frame_queues.get(camera_id)
                 if q is not None:
                     if q.full():
                         try:
-                            q.get_nowait()   # drop oldest frame
+                            q.get_nowait()
                         except asyncio.QueueEmpty:
                             pass
                     try:
                         q.put_nowait(annotated)
                     except asyncio.QueueFull:
                         pass
+
+                # Telemetry: Measure and log processed FPS every 30 seconds
+                fps_frame_count += 1
+                now_ts = time.monotonic()
+                if (now_ts - fps_start_time) >= 30.0:
+                    actual_fps = fps_frame_count / (now_ts - fps_start_time)
+                    logger.info(
+                        "[%s] Telemetry: Processing at %.2f FPS (Target: %.1f FPS, Active Tracks: %d)",
+                        camera_id, actual_fps, target_fps, len(track_color_state),
+                    )
+                    fps_frame_count = 0
+                    fps_start_time = now_ts
 
 
 

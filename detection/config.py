@@ -57,11 +57,77 @@ rather than hard-coding keeps the two from drifting apart when either is tuned.
 """
 
 
-CONF_THRESHOLD: float = float(os.getenv("VCC_CONF", "0.45"))
-"""Minimum YOLO confidence score to keep a detection."""
+CONF_THRESHOLD: float = float(os.getenv("VCC_CONF", "0.20"))
+"""
+Base YOLO confidence passed to model.track().
+
+Set low (0.20) so ByteTrack sees all candidate detections. Class-specific
+post-filters in CLASS_CONF_THRESHOLDS then discard detections that are too
+weak for their particular class. This gives fine-grained control without
+losing small / partially-occluded vehicles (bikes, autos) that previously
+scored between 0.25-0.44 and were silently discarded at 0.45.
+"""
 
 IOU_THRESHOLD: float = float(os.getenv("VCC_IOU", "0.45"))
 """IoU threshold for NMS during detection."""
+
+# ---------------------------------------------------------------------------
+# Class-specific confidence thresholds (post-inference filter)
+# ---------------------------------------------------------------------------
+# Applied AFTER model.track() — detections below these per-class thresholds
+# are discarded from the track list fed to the LineCounter.
+#
+# Two-wheelers / three-wheelers are harder to detect (small, occluded, fast),
+# so they use a lower threshold than large vehicles which are easy to see.
+# Override any value via environment variable, e.g. VCC_CONF_CAR=0.40.
+
+CLASS_CONF_THRESHOLDS: dict[str, float] = {
+    "bicycle":       float(os.getenv("VCC_CONF_BICYCLE",  "0.25")),
+    "motorcycle":    float(os.getenv("VCC_CONF_MOTO",     "0.25")),
+    "auto_rickshaw": float(os.getenv("VCC_CONF_AUTO",     "0.25")),
+    "car":           float(os.getenv("VCC_CONF_CAR",      "0.35")),
+    "bus":           float(os.getenv("VCC_CONF_BUS",      "0.35")),
+    "truck":         float(os.getenv("VCC_CONF_TRUCK",    "0.35")),
+}
+"""
+Per-class confidence floor used to post-filter model.track() results.
+
+Smaller / harder-to-detect vehicle classes (bikes, autos) use a lower threshold
+than large easily-visible ones (car, bus, truck).
+"""
+
+# ---------------------------------------------------------------------------
+# Inference image size & performance knobs
+# ---------------------------------------------------------------------------
+
+INFER_IMGSZ: int = int(os.getenv("VCC_INFER_IMGSZ", "640"))
+"""
+Frames are resized to INFER_IMGSZ × INFER_IMGSZ before being passed to
+model.track(). This pre-resize happens in Python, so the executor receives a
+small array and ultralytics' internal letterbox becomes a no-op. Bounding box
+coordinates returned by the model are in the resized frame's coordinate space
+and are scaled back to the original camera resolution before any downstream
+use (drawing, line-crossing, color crop).
+"""
+
+COLOR_DETECT_INTERVAL: int = int(os.getenv("VCC_COLOR_DETECT_INTERVAL", "8"))
+"""
+Color detection (K-Means) is run at most once per this many frames per track.
+
+Within each window the frame with the highest detection confidence is chosen
+for sampling (best view of the vehicle), rather than sampling on a fixed
+frame count. Between windows the cached color is reused.
+"""
+
+MAX_INFER_WORKERS: int = int(os.getenv("VCC_MAX_INFER_WORKERS", "2"))
+"""
+Number of workers in the GLOBAL shared YOLO inference thread pool.
+
+This pool is shared across ALL camera tasks — it is NOT per-camera.
+On a CPU-only system extra workers beyond the physical core count add
+context-switch overhead without improving throughput. Default 2 is a
+reasonable starting point for a quad-core CPU running 2-4 cameras.
+"""
 
 # ---------------------------------------------------------------------------
 # Backend API
