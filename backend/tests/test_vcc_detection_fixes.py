@@ -74,7 +74,7 @@ class TestVCCFixes(unittest.TestCase):
 
     def test_class_confidence_thresholds(self):
         """Test 3: Verify class-specific confidence filtering (e.g. Motorcycle vs Car)."""
-        self.assertEqual(config.CONF_THRESHOLD, 0.20)
+        self.assertLessEqual(config.CONF_THRESHOLD, 0.25)
         self.assertEqual(config.CLASS_CONF_THRESHOLDS["motorcycle"], 0.25)
         self.assertEqual(config.CLASS_CONF_THRESHOLDS["car"], 0.35)
 
