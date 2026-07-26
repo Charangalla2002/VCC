@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  vcc-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vcc-app:latest
+    container_name: vcc_container
+    restart: unless-stopped
+    ports:
+      - "80:80"        # Nginx Web Dashboard
+      - "5173:5173"    # Vite Dev/Dashboard Mirror Port
+      - "5174:5174"    # Training Studio UI Port
+      - "8000:8000"    # Backend API Port
+      - "8001:8001"    # MJPEG Camera Stream Port
+      - "8002:8002"    # Dedicated Training Service Port
+    environment:
+      - VCC_TARGET_FPS=10.0
+      - VCC_CONF=0.20
+      - VCC_IOU=0.45
+      - VCC_INFER_IMGSZ=640
+      - VCC_COLOR_DETECT_INTERVAL=8
+      - VCC_MAX_INFER_WORKERS=2
+      - VCC_MODEL_PATH=/app/yolo11n.pt
+      - VCC_FALLBACK_MODEL=/app/yolo11n.pt
+      - DATABASE_URL=sqlite+aiosqlite:////app/vcc.db
+    volumes:
+      # Data persistence across container restarts
+      - vcc_db_data:/app/vcc_db
+      - vcc_training_data:/app/backend/training_data
+      - vcc_uploads:/app/uploads
+
+volumes:
+  vcc_db_data:
+    driver: local
+  vcc_training_data:
+    driver: local
+  vcc_uploads:
+    driver: local
