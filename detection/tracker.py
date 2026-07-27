@@ -388,8 +388,11 @@ class ThreadedRTSPCapture:
         # Set == "consumer has taken the frame in the slot, produce the next one".
         self._taken = threading.Event()
         self._taken.set()
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|buffer_size;10240000|max_delay;500000"
-        self.cap = cv2.VideoCapture(source_parsed, cv2.CAP_FFMPEG)
+        if isinstance(source_parsed, str) and _is_network_source(source_parsed):
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|buffer_size;10240000|max_delay;500000"
+            self.cap = cv2.VideoCapture(source_parsed, cv2.CAP_FFMPEG)
+        else:
+            self.cap = cv2.VideoCapture(source_parsed)
         self.latest_frame = None
         self.ret = False
         self.running = True
@@ -687,6 +690,13 @@ async def run_camera(
         source_parsed: int | str = int(source)
     except (ValueError, TypeError):
         source_parsed = source
+
+    # Resolve relative file path to absolute path if needed
+    if isinstance(source_parsed, str) and not _is_network_source(source_parsed) and not os.path.isabs(source_parsed):
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        resolved = os.path.abspath(os.path.join(repo_root, source_parsed))
+        if os.path.exists(resolved):
+            source_parsed = resolved
 
     # A local file is finite content, not a live feed: every frame matters, so the
     # capture must hand them over one-for-one instead of dropping whatever the
