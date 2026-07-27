@@ -868,17 +868,16 @@ async def run_camera(
                         continue
 
                     fail_streak += 1
-                    if fail_streak <= 3 or fail_streak % 10 == 0:
-                        logger.warning(
-                            "[%s] Frame read failed (attempt %d) -- retrying in %.1f s.",
-                            camera_id, fail_streak, backoff,
-                        )
-                    else:
-                        logger.debug(
-                            "[%s] Frame read failed (attempt %d) -- retrying in %.1f s.",
-                            camera_id, fail_streak, backoff,
-                        )
+                    if fail_streak < 30 and cap.isOpened():
+                        # Minor transient frame miss -- retry without tearing down the RTSP connection
+                        await asyncio.sleep(0.01)
+                        continue
 
+                    # Stream is genuinely stalled -- reconnect
+                    logger.warning(
+                        "[%s] RTSP stream stalled after %d consecutive frame failures -- reconnecting in %.1f s...",
+                        camera_id, fail_streak, backoff,
+                    )
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2.0, RECONNECT_MAX_BACKOFF)
 
@@ -898,6 +897,7 @@ async def run_camera(
                     else:
                         cap = await loop.run_in_executor(None, lambda: ThreadedRTSPCapture(source_parsed, sequential=is_file_source))
                     connecting_logged = False
+                    fail_streak = 0
                     continue
 
                 if fail_streak:
