@@ -21,6 +21,7 @@ _START_TIME: float = time.monotonic()
 
 
 @router.get("/health", response_model=HealthResponse, summary="Health check")
+@router.get("/api/health", response_model=HealthResponse, summary="Health check alias")
 async def health_check(db: AsyncSession = Depends(get_db)) -> HealthResponse:
     """Return API health status including database connectivity and uptime."""
     db_ok = False

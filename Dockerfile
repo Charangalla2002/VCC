@@ -29,7 +29,8 @@ RUN npm run build
 # ------------------------------------------------------------------------------
 # STAGE 2: Python Runtime & Deployment Stage
 # ------------------------------------------------------------------------------
-FROM python:3.11-slim
+ARG TARGETPLATFORM
+FROM --platform=$TARGETPLATFORM python:3.11-slim
 
 # Prevent Python from writing .pyc files and buffer stdout/stderr
 ENV PYTHONUNBUFFERED=1 \

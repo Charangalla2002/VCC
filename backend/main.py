@@ -245,6 +245,7 @@ from routers import alerts as alerts_router  # noqa: E402
 
 app.include_router(health.router)
 app.include_router(auth_router.router)
+app.include_router(auth_router.router, prefix="/api")
 app.include_router(events.router)
 app.include_router(cameras.router)
 app.include_router(locations.router)
