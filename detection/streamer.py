@@ -307,10 +307,16 @@ async def _mjpeg_handler(
         while True:
             frame_bytes: bytes
 
+            # Dynamic subscription retry if camera broadcaster was not ready when request started
+            if sub is None or bcast is None:
+                bcast = _get_broadcaster(request, camera_id)
+                if bcast is not None:
+                    sub = bcast.subscribe()
+
             if sub is not None:
                 try:
                     # Already-encoded JPEG, shared with every other viewer.
-                    frame_bytes = await asyncio.wait_for(sub.get(), timeout=5.0)
+                    frame_bytes = await asyncio.wait_for(sub.get(), timeout=1.0)
                 except asyncio.TimeoutError:
                     # No new frame yet — send placeholder to keep connection alive
                     frame_bytes = placeholder

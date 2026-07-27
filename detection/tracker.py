@@ -752,23 +752,32 @@ async def run_camera(
                 camera_id,
             )
 
-        if cap is None:
+        if cap is None or not cap.isOpened():
             # FFMPEG / OpenCV fallback with dedicated background frame reader thread
-            logger.info("[%s] Opening source using Threaded RTSP Capture (TCP Transport)...", camera_id)
+            logger.info("[%s] Opening source using Threaded RTSP Capture...", camera_id)
             cap = await loop.run_in_executor(
                 None, lambda: ThreadedRTSPCapture(source_parsed, sequential=is_file_source)
             )
-            if not cap.isOpened():
+            retry_count = 0
+            while not cap.isOpened() and not single_pass:
+                retry_count += 1
+                if retry_count <= 3 or retry_count % 10 == 0:
+                    logger.warning(
+                        "[%s] Cannot open live camera '%s' (attempt %d). Retrying in 2.0 s...",
+                        camera_id, source, retry_count,
+                    )
+                await asyncio.sleep(2.0)
+                await loop.run_in_executor(None, cap.release)
+                cap = await loop.run_in_executor(
+                    None, lambda: ThreadedRTSPCapture(source_parsed, sequential=is_file_source)
+                )
+
+            if not cap.isOpened() and single_pass:
                 logger.error(
-                    "[%s] Cannot open source '%s'. Camera task exiting.",
+                    "[%s] Cannot open uploaded video source '%s'. Task exiting.",
                     camera_id, source,
                 )
-                # An uploaded video that cannot be opened is never going to
-                # succeed on a retry. Without this the supervisor sees the task
-                # exit, respawns it 5 s later and the row reads 'processing'
-                # forever -- a silent infinite loop instead of a visible failure.
-                if single_pass:
-                    await _report_video_complete(http_client, camera_id, "failed")
+                await _report_video_complete(http_client, camera_id, "failed")
                 return
 
         # Inspect stream codec
