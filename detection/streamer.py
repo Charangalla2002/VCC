@@ -116,8 +116,12 @@ def _make_placeholder(camera_id: str, w: int = 640, h: int = 360) -> bytes:
 # JPEG encoding (executed off the event loop)
 # ---------------------------------------------------------------------------
 
-def _encode_jpeg(frame_np: np.ndarray, quality: int = 80) -> bytes | None:
-    """Encode *frame_np* to JPEG bytes.  Runs in a worker thread, never inline."""
+def _encode_jpeg(frame_np: np.ndarray, quality: int = 70, max_dim: int = 1280) -> bytes | None:
+    """Encode *frame_np* to JPEG bytes. Downscales high-resolution frames (max 1280px) for smooth streaming."""
+    h, w = frame_np.shape[:2]
+    if max(h, w) > max_dim:
+        scale = max_dim / float(max(h, w))
+        frame_np = cv2.resize(frame_np, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_LINEAR)
     ok, buf = cv2.imencode(".jpg", frame_np, [cv2.IMWRITE_JPEG_QUALITY, quality])
     if not ok:
         return None
@@ -137,15 +141,8 @@ class _CameraBroadcaster:
     ``bytes`` object is then handed to every currently-connected viewer, so N
     viewers cost ONE encode and no viewer steals another viewer's frames.
 
-    Each subscriber owns a one-slot queue.  A viewer that has not picked up its
-    previous frame simply loses it — a slow client can never stall the
-    broadcaster or any other client.
-
-    The broadcaster deliberately holds the *frame_queues registry*, not a queue
-    object.  ``start_detection.monitor_cameras_loop`` pops and re-creates a
-    camera's queue on every source change, crash or delete; a captured queue
-    object would leave this task awaiting an orphan forever and every viewer of
-    that camera stuck on the placeholder until the process restarted.
+    Each subscriber owns a two-slot queue to absorb minor network jitter without
+    dropping frames.
     """
 
     #: How long to wait on one queue before re-resolving it from the registry.
@@ -172,7 +169,7 @@ class _CameraBroadcaster:
 
     def subscribe(self) -> asyncio.Queue[bytes]:
         """Register a new viewer and (re)start the broadcast task if needed."""
-        sub: asyncio.Queue[bytes] = asyncio.Queue(maxsize=1)
+        sub: asyncio.Queue[bytes] = asyncio.Queue(maxsize=2)
         self.subscribers.add(sub)
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(

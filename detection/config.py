@@ -146,7 +146,7 @@ SERVICE_API_KEY: str = os.getenv("VCC_SERVICE_API_KEY") or os.getenv("SERVICE_AP
 STREAM_PORT: int = int(os.getenv("VCC_STREAM_PORT", "8001"))
 """TCP port the MJPEG aiohttp server listens on."""
 
-FRAME_BUFFER_SIZE: int = int(os.getenv("VCC_FRAME_BUFFER", "4"))
+FRAME_BUFFER_SIZE: int = int(os.getenv("VCC_FRAME_BUFFER", "8"))
 """Maximum frames held in each per-camera asyncio.Queue before dropping."""
 
 # ---------------------------------------------------------------------------

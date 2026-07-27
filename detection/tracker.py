@@ -794,7 +794,7 @@ async def run_camera(
             await _report_video_complete(http_client, camera_id, "processing")
         
         # CPU Optimization: target FPS pacing
-        target_fps = float(os.getenv("VCC_TARGET_FPS", "10.0"))
+        target_fps = float(os.getenv("VCC_TARGET_FPS", "15.0"))
         target_delay = 1.0 / target_fps if target_fps > 0 else 0
 
         # Per-track temporal color & confidence tracking memory
