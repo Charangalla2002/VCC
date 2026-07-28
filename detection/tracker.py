@@ -168,23 +168,22 @@ def _draw_track(
     box:       tuple[float, float, float, float],
     track_id:  int,
     label:     str,
-    direction: str | None,
+    has_crossed: bool = False,
     color_label: str | None = None,
 ) -> None:
-    """Draw a bounding box and label for a single tracked vehicle. Highlights counted vehicles in bright green/magenta."""
+    """Draw a bounding box and label for a single tracked vehicle.
+    Default color: White (un-crossed).
+    Crossed color: Green (after crossing line).
+    """
     x1, y1, x2, y2 = (int(v) for v in box)
 
-    # Bounding Box Color: Bright Green for DOWN count, Bright Magenta for UP count, Cyan for uncounted
-    colour = (
-        (0, 255, 0) if direction == "down"
-        else (255, 0, 255) if direction == "up"
-        else (255, 212, 0)
-    )
+    # Bounding Box Color: White (255, 255, 255) before line crossing; Bright Green (0, 255, 0) after crossing
+    colour = (0, 255, 0) if has_crossed else (255, 255, 255)
 
-    thickness = config.BOX_THICKNESS + 1 if direction else config.BOX_THICKNESS
+    thickness = config.BOX_THICKNESS + 1 if has_crossed else config.BOX_THICKNESS
     cv2.rectangle(frame, (x1, y1), (x2, y2), colour, thickness)
 
-    counted_badge = " [COUNTED]" if direction else ""
+    counted_badge = " [COUNTED]" if has_crossed else ""
     if color_label and color_label != "Unknown":
         text = f"#{track_id}{counted_badge} {color_label} {label}"
     else:
@@ -193,13 +192,14 @@ def _draw_track(
     (tw, th), _ = cv2.getTextSize(
         text, cv2.FONT_HERSHEY_SIMPLEX, config.FONT_SCALE, 1
     )
-    cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 4, y1), colour, -1)
+    header_bg = (0, 160, 0) if has_crossed else (60, 60, 60)
+    cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 4, y1), header_bg, -1)
     cv2.putText(
         frame, text,
         (x1 + 2, y1 - 4),
         cv2.FONT_HERSHEY_SIMPLEX,
         config.FONT_SCALE,
-        (0, 0, 0) if direction == "down" else config.COLOUR_TEXT,
+        (255, 255, 255),
         1,
         cv2.LINE_AA,
     )
@@ -1028,22 +1028,13 @@ async def run_camera(
                         cls_raw = t.cls
                         cls_id  = int(cls_raw.item() if hasattr(cls_raw, "item") else cls_raw)
                         label   = config.VEHICLE_CLASS_MAP.get(cls_id, "vehicle")
-                        last_dir: str | None = None
-
-                        for lid in counter.counted_down_per_line:
-                            if tid in counter.counted_down_per_line[lid]:
-                                last_dir = "down"
-                                break
-                        if not last_dir:
-                            for lid in counter.counted_up_per_line:
-                                if tid in counter.counted_up_per_line[lid]:
-                                    last_dir = "up"
-                                    break
+                        has_crossed = counter.has_crossed(tid)
 
                         _draw_track(
                             annotated,
                             (float(box[0]), float(box[1]), float(box[2]), float(box[3])),
-                            tid, label, last_dir,
+                            tid, label,
+                            has_crossed=has_crossed,
                             color_label=getattr(t, "color", None)
                         )
                     except Exception:

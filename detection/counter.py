@@ -262,6 +262,19 @@ class LineCounter:
         )
         return True
 
+    def has_crossed(self, track_id: int) -> bool:
+        """
+        Return True if *track_id* has crossed ANY virtual counting line in any direction.
+        Used to set bounding box color to Green after crossing, White before.
+        """
+        for lid in self.counted_down_per_line:
+            if track_id in self.counted_down_per_line[lid]:
+                return True
+        for lid in self.counted_up_per_line:
+            if track_id in self.counted_up_per_line[lid]:
+                return True
+        return False
+
     def process_tracks(
         self,
         tracks: list[Any],
