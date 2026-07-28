@@ -85,19 +85,14 @@ def load_model() -> Any:
 
     If that path cannot be loaded (file not found, corrupted, etc.) a
     ``logging.warning`` is emitted and the function retries with
-    ``config.FALLBACK_MODEL``.  If that also fails the exception propagates.
-
-    Returns
-    -------
-    ultralytics.YOLO
-        Loaded model instance.
+    ``config.FALLBACK_MODEL``. If that also fails the exception propagates.
     """
     from ultralytics import YOLO
 
     primary = config.MODEL_PATH
     try:
         model = YOLO(primary)
-        logger.info("Model loaded: %s", primary)
+        logger.info("[RUNTIME VERIFICATION] Live Detection Engine loaded model: '%s' (Classes: %s)", primary, getattr(model, "names", {}))
         sync_model_classes(model)
         return model
     except Exception as exc:
@@ -109,7 +104,7 @@ def load_model() -> Any:
             config.FALLBACK_MODEL,
         )
         model = YOLO(config.FALLBACK_MODEL)
-        logger.info("Fallback model loaded: %s", config.FALLBACK_MODEL)
+        logger.info("[RUNTIME VERIFICATION] Fallback model loaded: '%s' (Classes: %s)", config.FALLBACK_MODEL, getattr(model, "names", {}))
         sync_model_classes(model)
         return model
 

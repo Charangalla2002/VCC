@@ -138,6 +138,14 @@ def main() -> None:
         name="vcc_train",
         exist_ok=True,
         verbose=True,
+        mosaic=1.0,
+        mixup=0.15,
+        degrees=10.0,
+        scale=0.5,
+        fliplr=0.5,
+        hsv_h=0.015,
+        hsv_s=0.7,
+        hsv_v=0.4,
     )
 
     # ---- Export weights -----------------------------------------------------

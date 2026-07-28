@@ -16,8 +16,8 @@ services:
       - "8001:8001"    # MJPEG Camera Stream Port
       - "8002:8002"    # Dedicated Training Service Port
     environment:
-      - VCC_TARGET_FPS=10.0
-      - VCC_CONF=0.20
+      - VCC_TARGET_FPS=15.0
+      - VCC_CONF=0.15
       - VCC_IOU=0.45
       - VCC_INFER_IMGSZ=640
       - VCC_COLOR_DETECT_INTERVAL=8
