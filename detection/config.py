@@ -57,15 +57,11 @@ rather than hard-coding keeps the two from drifting apart when either is tuned.
 """
 
 
-CONF_THRESHOLD: float = float(os.getenv("VCC_CONF", "0.20"))
+CONF_THRESHOLD: float = float(os.getenv("VCC_CONF", "0.15"))
 """
 Base YOLO confidence passed to model.track().
 
-Set low (0.20) so ByteTrack sees all candidate detections. Class-specific
-post-filters in CLASS_CONF_THRESHOLDS then discard detections that are too
-weak for their particular class. This gives fine-grained control without
-losing small / partially-occluded vehicles (bikes, autos) that previously
-scored between 0.25-0.44 and were silently discarded at 0.45.
+Set low (0.15) so ByteTrack sees all candidate detections across all vehicle classes.
 """
 
 IOU_THRESHOLD: float = float(os.getenv("VCC_IOU", "0.45"))
@@ -76,18 +72,14 @@ IOU_THRESHOLD: float = float(os.getenv("VCC_IOU", "0.45"))
 # ---------------------------------------------------------------------------
 # Applied AFTER model.track() — detections below these per-class thresholds
 # are discarded from the track list fed to the LineCounter.
-#
-# Two-wheelers / three-wheelers are harder to detect (small, occluded, fast),
-# so they use a lower threshold than large vehicles which are easy to see.
-# Override any value via environment variable, e.g. VCC_CONF_CAR=0.40.
 
 CLASS_CONF_THRESHOLDS: dict[str, float] = {
-    "bicycle":       float(os.getenv("VCC_CONF_BICYCLE",  "0.25")),
-    "motorcycle":    float(os.getenv("VCC_CONF_MOTO",     "0.25")),
-    "auto_rickshaw": float(os.getenv("VCC_CONF_AUTO",     "0.25")),
-    "car":           float(os.getenv("VCC_CONF_CAR",      "0.35")),
-    "bus":           float(os.getenv("VCC_CONF_BUS",      "0.35")),
-    "truck":         float(os.getenv("VCC_CONF_TRUCK",    "0.35")),
+    "bicycle":       float(os.getenv("VCC_CONF_BICYCLE",  "0.15")),
+    "motorcycle":    float(os.getenv("VCC_CONF_MOTO",     "0.15")),
+    "auto_rickshaw": float(os.getenv("VCC_CONF_AUTO",     "0.15")),
+    "car":           float(os.getenv("VCC_CONF_CAR",      "0.20")),
+    "bus":           float(os.getenv("VCC_CONF_BUS",      "0.20")),
+    "truck":         float(os.getenv("VCC_CONF_TRUCK",    "0.20")),
 }
 """
 Per-class confidence floor used to post-filter model.track() results.

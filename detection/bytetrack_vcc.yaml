@@ -22,16 +22,11 @@
 tracker_type: bytetrack
 
 # Detection confidence bands for the two association stages.
-track_high_thresh: 0.25 # first pass, confident detections
-track_low_thresh: 0.1 # second pass, recovers weak/partly occluded vehicles
+track_high_thresh: 0.20 # first pass, confident detections
+track_low_thresh: 0.10 # second pass, recovers weak/partly occluded vehicles
 
-# Confidence required to open a NEW track. Raising this suppresses spurious
-# short-lived tracks from noise; too high and genuinely distant or small
-# vehicles are never picked up at all. Measured on the sample clip, 0.4 cut
-# fragmentation from 8 tracks to 6 for 4 vehicles without changing the count --
-# but that clip has no occlusion, so treat this as a starting point to validate
-# against your own footage rather than a tuned value.
-new_track_thresh: 0.25
+# Confidence required to open a NEW track.
+new_track_thresh: 0.20
 
 # Frames a lost track stays re-acquirable. Higher recovers vehicles that pass
 # behind others instead of assigning them a fresh id; too high and an id can be
