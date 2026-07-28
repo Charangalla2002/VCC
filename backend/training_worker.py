@@ -156,8 +156,19 @@ def main() -> None:
 
     if os.path.exists(weights_src):
         os.makedirs(os.path.dirname(args.output), exist_ok=True)
+        # Backup existing production model before replacing
+        if os.path.exists(args.output):
+            import time
+            timestamp = int(time.time())
+            backup_path = f"{args.output}.backup_{timestamp}"
+            try:
+                shutil.copy2(args.output, backup_path)
+                print(f"Production model backed up to: {backup_path}")
+            except Exception as e:
+                print(f"Warning: Could not create model backup: {e}")
+
         shutil.copy2(weights_src, args.output)
-        print(f"Model weights saved to: {args.output}")
+        print(f"Model weights successfully saved to: {args.output}")
         _emit({"event": "complete", "output": args.output})
     else:
         print("ERROR: No trained weights found after training.", file=sys.stderr)
