@@ -253,6 +253,20 @@ def compile_and_split_dataset(
         "test": valid_items[n_train + n_val:],
     }
 
+    # Oversample minority classes (auto_rickshaw & truck) in training set
+    train_items = splits["train"]
+    oversampled_train = list(train_items)
+    for img_path, boxes in train_items:
+        cls_ids = set(b[0] for b in boxes)
+        if 2 in cls_ids:
+            # Oversample auto_rickshaw items 3x in train split
+            oversampled_train.extend([(img_path, boxes)] * 2)
+        elif 4 in cls_ids:
+            # Oversample truck items 2x in train split
+            oversampled_train.append((img_path, boxes))
+
+    splits["train"] = oversampled_train
+
     # Create destination directory structure
     for s_name in ["train", "val", "test"]:
         os.makedirs(os.path.join(output_dir, "images", s_name), exist_ok=True)
