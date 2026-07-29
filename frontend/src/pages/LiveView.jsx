@@ -37,7 +37,7 @@ export default function LiveView() {
 
       <div className="flex-1 grid grid-cols-1 xl:grid-cols-4 gap-6 min-h-0">
         {/* Main Feed */}
-        <div className="xl:col-span-3 flex flex-col min-h-0 bg-bg-card rounded-xl border border-bg-border shadow-card overflow-hidden">
+        <div className="xl:col-span-3 flex flex-col bg-bg-card rounded-xl border border-bg-border shadow-card overflow-hidden p-4">
           <LiveFeedPanel lastMessage={lastMessage} />
         </div>
 

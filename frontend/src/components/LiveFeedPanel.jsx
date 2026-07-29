@@ -140,14 +140,14 @@ export default function LiveFeedPanel({ lastMessage }) {
       </div>
 
       {/* ── Stream container ── */}
-      <div className="relative flex-1 min-h-[360px] rounded-2xl overflow-hidden bg-slate-950 border border-slate-800/90 shadow-2xl flex items-center justify-center group">
+      <div className="relative w-full aspect-video min-h-[420px] max-h-[680px] rounded-2xl overflow-hidden bg-slate-950 border border-slate-800/90 shadow-2xl flex items-center justify-center group">
         {/* MJPEG stream */}
         {streamSrc && !imgError && (
           <img
             key={imgKey}
             src={streamSrc}
             alt="Live camera feed"
-            className="w-full h-full object-contain max-h-[520px] transition-transform duration-500 group-hover:scale-[1.005]"
+            className="w-full h-full object-contain transition-transform duration-500 group-hover:scale-[1.005]"
             onError={() => setImgError(true)}
           />
         )}
