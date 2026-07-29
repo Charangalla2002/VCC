@@ -15,10 +15,10 @@ from typing import Any
 # Model & tracker
 # ---------------------------------------------------------------------------
 
-MODEL_PATH: str = os.getenv("VCC_MODEL_PATH", "yolo12n.pt")
+MODEL_PATH: str = os.getenv("VCC_MODEL_PATH", "yolo11n.pt")
 """Primary model file path. Set VCC_MODEL_PATH to override."""
 
-FALLBACK_MODEL: str = os.getenv("VCC_FALLBACK_MODEL", "yolo12n.pt")
+FALLBACK_MODEL: str = os.getenv("VCC_FALLBACK_MODEL", "yolo11n.pt")
 """Fallback model used when MODEL_PATH cannot be loaded."""
 
 

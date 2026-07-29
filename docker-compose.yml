@@ -22,8 +22,8 @@ services:
       - VCC_INFER_IMGSZ=640
       - VCC_COLOR_DETECT_INTERVAL=8
       - VCC_MAX_INFER_WORKERS=2
-      - VCC_MODEL_PATH=/app/yolo12n.pt
-      - VCC_FALLBACK_MODEL=/app/yolo12n.pt
+      - VCC_MODEL_PATH=/app/yolo11n.pt
+      - VCC_FALLBACK_MODEL=/app/yolo11n.pt
       - DATABASE_URL=sqlite+aiosqlite:////app/vcc.db
     volumes:
       # Data persistence across container restarts

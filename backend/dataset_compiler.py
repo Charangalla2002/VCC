@@ -253,7 +253,7 @@ def compile_and_split_dataset(
         "test": valid_items[n_train + n_val:],
     }
 
-    # Oversample minority classes (auto_rickshaw & truck) in training set
+    # Oversample minority classes (motorcycle [cls 1] & auto_rickshaw [cls 2]) in training set
     train_items = splits["train"]
     oversampled_train = list(train_items)
     for img_path, boxes in train_items:
@@ -261,9 +261,9 @@ def compile_and_split_dataset(
         if 2 in cls_ids:
             # Oversample auto_rickshaw items 3x in train split
             oversampled_train.extend([(img_path, boxes)] * 2)
-        elif 4 in cls_ids:
-            # Oversample truck items 2x in train split
-            oversampled_train.append((img_path, boxes))
+        elif 1 in cls_ids:
+            # Oversample motorcycle items 3x in train split
+            oversampled_train.extend([(img_path, boxes)] * 2)
 
     splits["train"] = oversampled_train
 
