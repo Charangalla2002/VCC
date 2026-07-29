@@ -84,11 +84,11 @@ def main() -> None:
     repo_root = os.path.dirname(backend_dir)
 
     base_model_candidates = [
-        os.path.join(repo_root, "yolo11n.pt"),
-        os.path.join(repo_root, "yolo11s.pt"),
-        "yolo11n.pt",
+        os.path.join(repo_root, "yolo12n.pt"),
+        os.path.join(repo_root, "yolo12s.pt"),
+        "yolo12n.pt",
     ]
-    base_model = "yolo11n.pt"
+    base_model = "yolo12n.pt"
     for candidate in base_model_candidates:
         if os.path.isfile(candidate):
             base_model = candidate
