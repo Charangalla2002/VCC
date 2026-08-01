@@ -222,6 +222,14 @@ async def run():
         queues = {}
         counters = {}
 
+        loop = asyncio.get_running_loop()
+        def handle_async_exception(loop, context):
+            msg = context.get("message")
+            exc = context.get("exception")
+            print(f"[SYSTEM ASYNC EXCEPTION] {msg}: {exc}")
+
+        loop.set_exception_handler(handle_async_exception)
+
         # Start the HTTP streamer server
         print("[SYSTEM] Starting MJPEG Streamer Server (Port 8001)...")
         streamer_task = asyncio.create_task(start_server(queues))

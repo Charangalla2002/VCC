@@ -651,6 +651,14 @@ def _release_capture_in_background(cap: Any, camera_id: str) -> None:
 
 
 
+def handle_async_exception(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+    """Global exception handler for asyncio event loop to prevent swallowed background task crashes."""
+    msg = context.get("message")
+    exc = context.get("exception")
+    logger.error("[ASYNC EXCEPTION] %s", msg, exc_info=exc)
+    print(f"[SYSTEM ASYNC EXCEPTION] {msg}: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Per-camera async task
 # ---------------------------------------------------------------------------
@@ -662,48 +670,25 @@ async def run_camera(
 ) -> None:
     """
     Continuous inference loop for a single camera.
-
-    Reads frames from ``camera_config['source']``, runs ByteTrack via
-    ``.track()``, updates the ``LineCounter``, posts any new events to the
-    backend API, annotates frames, and pushes them to the shared
-    ``frame_queues[camera_id]`` for the MJPEG streamer.
-
-    Parameters
-    ----------
-    camera_config :
-        A dict from ``config.CAMERAS``.
-    counter :
-        The ``LineCounter`` instance for this camera.
-    frame_queues :
-        Shared mapping of camera_id → asyncio.Queue (max ``config.FRAME_BUFFER_SIZE``).
     """
     camera_id = camera_config["camera_id"]
     source    = camera_config["source"]
 
-    # source may be "0", "1", … (device index strings) or a URL / path
     try:
         source_parsed: int | str = int(source)
     except (ValueError, TypeError):
         source_parsed = source
 
-    # Resolve relative file path to absolute path if needed
     if isinstance(source_parsed, str) and not _is_network_source(source_parsed) and not os.path.isabs(source_parsed):
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         resolved = os.path.abspath(os.path.join(repo_root, source_parsed))
         if os.path.exists(resolved):
             source_parsed = resolved
 
-    # A local file is finite content, not a live feed: every frame matters, so the
-    # capture must hand them over one-for-one instead of dropping whatever the
-    # consumer was too slow to sample. Network URLs and device indices stay on the
-    # latest-frame-wins path, where dropping stale frames is the correct behaviour.
     is_file_source = isinstance(source_parsed, str) and not _is_network_source(source_parsed)
     if is_file_source:
         logger.info("[%s] File source detected — using sequential capture (no frame drops).", camera_id)
 
-    # An uploaded video is a finite job: process it once and report a result.
-    # Looping it (the behaviour a live/demo file source wants) would keep
-    # re-counting the same vehicles and inflate the report without bound.
     single_pass = str(camera_config.get("source_type") or "live") == "upload"
     eof_streak = 0
     if single_pass:
@@ -711,12 +696,19 @@ async def run_camera(
 
     logger.info("[%s] Opening source: %s", camera_id, source_parsed)
 
-    model = load_model()
+    loop = asyncio.get_running_loop()
+    loop.set_exception_handler(handle_async_exception)
+
+    try:
+        model = await asyncio.wait_for(
+            loop.run_in_executor(None, load_model),
+            timeout=15.0
+        )
+    except asyncio.TimeoutError:
+        logger.error("[%s] Camera pipeline startup / model load exceeded 15s — likely blocking call", camera_id)
+        return
 
     async with httpx.AsyncClient() as http_client:
-        loop = asyncio.get_running_loop()
-
-        # ---- Dual-path capture: native GStreamer preferred, FFMPEG fallback
         cap = None
         using_native_gst = False
 
@@ -775,9 +767,9 @@ async def run_camera(
                 await _report_video_complete(http_client, camera_id, "failed")
                 return
 
-        # Inspect stream codec
+        # Inspect stream codec off the main thread
         try:
-            fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+            fourcc = await loop.run_in_executor(None, lambda: int(cap.get(cv2.CAP_PROP_FOURCC)))
             codec_str = "".join([chr((fourcc >> 8 * i) & 0xFF) for i in range(4)]).strip().lower()
             if codec_str in ["hevc", "h265", "265h"]:
                 logger.info("[%s] Stream Codec: H.265 (HEVC) detected. Decoding via lossless TCP stream.", camera_id)
