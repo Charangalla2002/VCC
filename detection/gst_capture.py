@@ -239,8 +239,9 @@ class GStreamerCapture:
                     return True
             time.sleep(0.05)
 
-        logger.warning("[%s] Pipeline start timeout after %.1fs", self.source, timeout_sec)
-        return True
+        logger.warning("[%s] Pipeline start timeout after %.1fs — no frames received, marking failed", self.source, timeout_sec)
+        self.release()
+        return False
 
     def isOpened(self) -> bool:
         with self.lock:
