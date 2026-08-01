@@ -41,6 +41,12 @@ try:
         os.environ["PATH"] = gst_bin + os.pathsep + local_bin + os.pathsep + os.environ.get("PATH", "")
         os.environ["GI_TYPELIB_PATH"] = gst_typelibs
 
+        # Add GStreamer's bundled Python site-packages to sys.path so the
+        # venv can find PyGObject (gi) shipped with the MSVC installer
+        gst_site_packages = os.path.join(gst_root, "lib", "site-packages")
+        if os.path.isdir(gst_site_packages) and gst_site_packages not in sys.path:
+            sys.path.insert(0, gst_site_packages)
+
         if hasattr(os, "add_dll_directory"):
             try:
                 os.add_dll_directory(gst_bin)
