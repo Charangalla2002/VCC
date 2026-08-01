@@ -200,14 +200,32 @@ def compile_and_split_dataset(
     class_counts = {cid: 0 for cid in UNIFIED_CLASSES}
 
     for sdir in source_dirs:
-        img_dir = os.path.join(sdir, "images") if os.path.isdir(os.path.join(sdir, "images")) else sdir
-        lbl_dir = os.path.join(sdir, "labels") if os.path.isdir(os.path.join(sdir, "labels")) else sdir
-
-        if not os.path.exists(img_dir):
+        if not os.path.exists(sdir):
             continue
 
-        for ext in ["*.jpg", "*.jpeg", "*.png"]:
-            for img_path in Path(img_dir).glob(ext):
+        # Look for source-level class map (e.g. data.yaml or notes.json)
+        source_classes = {}
+        for yaml_candidate in [os.path.join(sdir, "data.yaml"), os.path.join(sdir, "dataset.yaml")]:
+            if os.path.exists(yaml_candidate):
+                try:
+                    with open(yaml_candidate, "r", encoding="utf-8") as yf:
+                        yd = yaml.safe_load(yf)
+                        if yd and "names" in yd:
+                            names = yd["names"]
+                            if isinstance(names, list):
+                                source_classes = {idx: name for idx, name in enumerate(names)}
+                            elif isinstance(names, dict):
+                                source_classes = {int(k): str(v) for k, v in names.items()}
+                except Exception as e:
+                    logger.warning("Could not parse source yaml %s: %s", yaml_candidate, e)
+
+        # Recursive search for all images across subdirectories
+        for ext in ["*.jpg", "*.jpeg", "*.png", "*.JPG", "*.PNG"]:
+            for img_path in Path(sdir).rglob(ext):
+                # Skip split/ output directory
+                if "split" in img_path.parts:
+                    continue
+
                 img_path_str = str(img_path)
                 stem = img_path.stem
 
@@ -217,14 +235,27 @@ def compile_and_split_dataset(
                     continue
                 seen_hashes.add(img_hash)
 
+                # Locate corresponding label file in same directory or parallel labels/ directory
+                lbl_path = None
+                possible_lbl_paths = [
+                    img_path.with_suffix(".txt"),
+                    Path(str(img_path.parent).replace("images", "labels")).joinpath(f"{stem}.txt"),
+                ]
+                for p in possible_lbl_paths:
+                    if p.exists():
+                        lbl_path = str(p)
+                        break
+
+                if not lbl_path:
+                    continue
+
                 # Read image dimensions
                 img = cv2.imread(img_path_str)
                 if img is None:
                     continue
                 h, w = img.shape[:2]
 
-                lbl_path = os.path.join(lbl_dir, f"{stem}.txt")
-                boxes = parse_label_file(lbl_path, w, h)
+                boxes = parse_label_file(lbl_path, w, h, source_classes=source_classes)
                 if not boxes:
                     continue
 

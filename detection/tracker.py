@@ -384,7 +384,10 @@ class ThreadedRTSPCapture:
         self._taken = threading.Event()
         self._taken.set()
         if isinstance(source_parsed, str) and _is_network_source(source_parsed):
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|buffer_size;10240000|max_delay;500000"
+            rtsp_buf = int(os.getenv("VCC_RTSP_BUFFER_SIZE", "10240000"))
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+                f"rtsp_transport;tcp|stimeout;5000000|buffer_size;{rtsp_buf}|max_delay;500000"
+            )
             self.cap = cv2.VideoCapture(source_parsed, cv2.CAP_FFMPEG)
         else:
             self.cap = cv2.VideoCapture(source_parsed)
@@ -599,15 +602,12 @@ class ThreadedRTSPCapture:
         self.running = False
         thread = self.thread
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
-            # Wait for any in-flight decode to finish; the reader thread then
-            # releases the capture itself in its finally block.
             thread.join(timeout=5.0)
             if thread.is_alive():
                 logger.warning(
-                    "Capture reader thread still blocked in read(); "
-                    "deferring release to that thread."
+                    "[%s] Thread join timed out after 5.0s during release — forcing capture handle teardown",
+                    getattr(self, "source_parsed", "unknown"),
                 )
-                return
         self._close_cap()
 
 
@@ -815,8 +815,9 @@ async def run_camera(
         RECONNECT_BASE_BACKOFF = 1.0
         RECONNECT_MAX_BACKOFF  = 30.0
         backoff          = RECONNECT_BASE_BACKOFF
-        fail_streak      = 0
         connecting_logged = False
+        connecting_start_time: float | None = None
+        reconnect_timestamps: list[float] = []
 
         try:
             while True:
@@ -835,6 +836,19 @@ async def run_camera(
                     health = _capture_health(cap)
 
                     if health == ThreadedRTSPCapture.CONNECTING:
+                        if connecting_start_time is None:
+                            connecting_start_time = time.monotonic()
+                        elapsed_conn = time.monotonic() - connecting_start_time
+                        if elapsed_conn > 8.0:
+                            logger.warning(
+                                "[%s] Stuck CONNECTING for %.1fs — forcing reconnect",
+                                camera_id, elapsed_conn
+                            )
+                            await loop.run_in_executor(None, cap.release)
+                            cap = await loop.run_in_executor(None, lambda: ThreadedRTSPCapture(source_parsed, sequential=is_file_source))
+                            connecting_start_time = time.monotonic()
+                            connecting_logged = False
+                            continue
                         if not connecting_logged:
                             logger.info(
                                 "[%s] Waiting for first frame from source...",
@@ -843,6 +857,8 @@ async def run_camera(
                             connecting_logged = True
                         await asyncio.sleep(0.2)
                         continue
+
+                    connecting_start_time = None
 
                     gst_upload_eos = using_native_gst and single_pass and not cap.isOpened()
                     if is_file_source and (not using_native_gst or gst_upload_eos):
@@ -869,6 +885,17 @@ async def run_camera(
                         continue
 
                     # Stream is genuinely stalled -- reconnect
+                    # Circuit breaker check: log warning if reconnects in last 1 hour exceed 15
+                    now_mono = time.monotonic()
+                    reconnect_timestamps = [t for t in reconnect_timestamps if now_mono - t < 3600]
+                    reconnect_timestamps.append(now_mono)
+                    if len(reconnect_timestamps) >= 15:
+                        logger.critical(
+                            "[%s] CRITICAL: Reconnected %d times in the last 1 hour. "
+                            "Check IP camera RTSP session cap / network instability.",
+                            camera_id, len(reconnect_timestamps)
+                        )
+
                     logger.warning(
                         "[%s] RTSP stream stalled after %d consecutive frame failures -- reconnecting in %.1f s...",
                         camera_id, fail_streak, backoff,
