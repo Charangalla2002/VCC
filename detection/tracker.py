@@ -371,244 +371,10 @@ class ThreadedRTSPCapture:
         self.source_parsed = source_parsed
         # Live sources (RTSP/webcam) use latest-frame-wins: the newest frame is
         # always the interesting one and stale frames are worthless, so the reader
-        # overwrites a single slot and the consumer samples whatever is current.
-        #
-        # A FILE is the opposite. Every frame is content, and the reader can decode
-        # the whole clip in well under a second while inference takes ~200ms per
-        # frame -- so latest-wins silently discards almost all of it. Measured on a
-        # 90-frame clip: only 6 frames ever reached inference and the vehicle was
-        # never counted. Sequential mode applies back-pressure so the reader hands
-        # over exactly one frame per consumer read, and nothing is dropped.
-        self.sequential = sequential
-        # Set == "consumer has taken the frame in the slot, produce the next one".
-        self._taken = threading.Event()
-        self._taken.set()
-        if isinstance(source_parsed, str) and _is_network_source(source_parsed):
-            rtsp_buf = int(os.getenv("VCC_RTSP_BUFFER_SIZE", "10240000"))
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-                f"rtsp_transport;tcp|stimeout;5000000|buffer_size;{rtsp_buf}|max_delay;500000"
-            )
-            self.cap = cv2.VideoCapture(source_parsed, cv2.CAP_FFMPEG)
-        else:
-            self.cap = cv2.VideoCapture(source_parsed)
-        self.latest_frame = None
-        self.ret = False
-        self.running = True
-        # Monotonic sequence number: incremented once per *newly decoded* frame.
-        # Consumers compare against the seq they last saw to tell a fresh frame
-        # from a repeat of the one they already tracked.
-        self.frame_seq = 0
-        self._last_read_seq = -1
-        self._pending_set: list[tuple[int, float]] = []
-        # Liveness bookkeeping.  ``opened_at`` starts the first-frame grace
-        # window; ``last_frame_ts`` drives stall detection once streaming began.
-        self.opened_at = time.monotonic()
-        self.last_frame_ts: float | None = None
-        # A camera that is slow to hand over its first frame (H.265 keyframe
-        # interval, TCP negotiation, DHCP-slow NVR) must NOT be torn down while
-        # it is still negotiating -- that used to livelock the reconnect ladder.
-        self.first_frame_timeout = (
-            first_frame_timeout
-            if first_frame_timeout is not None
-            else float(os.getenv("VCC_FIRST_FRAME_TIMEOUT", "20.0"))
-        )
-        # Once frames HAVE been flowing, silence this long means the stream is
-        # dead even though cap.read() may keep failing quietly forever.
-        self.stall_timeout = (
-            stall_timeout
-            if stall_timeout is not None
-            else float(os.getenv("VCC_STALL_TIMEOUT", "5.0"))
-        )
-        self.lock = threading.Lock()
-        self.thread = threading.Thread(target=self._update_loop, daemon=True)
-        self.thread.start()
+# Native Threaded RTSP Capture (Mapped directly to GStreamerCapture)
+# ---------------------------------------------------------------------------
 
-    # -- capture handle access ---------------------------------------------
-    # The lock is held ONLY to hand out / swap the capture reference and the
-    # frame slot.  No blocking decode ever happens under it.
-
-    def _cap_ref(self) -> Any:
-        with self.lock:
-            return self.cap
-
-    def isOpened(self) -> bool:
-        cap = self._cap_ref()
-        try:
-            return cap is not None and cap.isOpened()
-        except Exception:
-            return False
-
-    def get(self, prop_id: int) -> float:
-        cap = self._cap_ref()
-        try:
-            if cap is not None and cap.isOpened():
-                return cap.get(prop_id)
-        except Exception:
-            pass
-        return 0.0
-
-    def set(self, prop_id: int, value: float) -> bool:
-        """
-        Queue a property change (e.g. ``CAP_PROP_POS_FRAMES`` rewind).
-
-        The change is applied by the reader thread between two reads rather than
-        inline: calling ``cap.set()`` from another thread while a decode is in
-        flight is not safe with the FFMPEG backend.
-        """
-        with self.lock:
-            if self.cap is None:
-                return False
-            self._pending_set.append((prop_id, value))
-            # A deliberate seek (e.g. rewinding a finished .mp4) interrupts the
-            # stream on purpose, so restart the liveness clock instead of
-            # letting the gap it creates look like a stall.
-            self.opened_at    = time.monotonic()
-            self.last_frame_ts = None
-        return True
-
-    def _update_loop(self) -> None:
-        try:
-            while self.running:
-                cap = self._cap_ref()
-                if cap is None:
-                    time.sleep(0.05)
-                    continue
-                try:
-                    if not cap.isOpened():
-                        time.sleep(0.05)
-                        continue
-                except Exception:
-                    time.sleep(0.05)
-                    continue
-
-                # Apply any queued property changes (rewind, etc.) in-thread.
-                with self.lock:
-                    pending, self._pending_set = self._pending_set, []
-                for prop_id, value in pending:
-                    try:
-                        cap.set(prop_id, value)
-                    except Exception:
-                        logger.debug("Capture set(%s, %s) failed", prop_id, value)
-
-                # Sequential (file) mode: do not decode ahead of the consumer.
-                # Waiting in slices keeps release() responsive.
-                if self.sequential:
-                    while self.running and not self._taken.wait(timeout=0.1):
-                        pass
-                    if not self.running:
-                        break
-
-                # ---- BLOCKING network decode happens OUTSIDE the lock -------
-                try:
-                    ret, frame = cap.read()
-                except Exception:
-                    ret, frame = False, None
-
-                if ret and frame is not None:
-                    with self.lock:
-                        if not self.running:
-                            break
-                        self.latest_frame = frame
-                        self.ret = True
-                        self.frame_seq += 1
-                        self.last_frame_ts = time.monotonic()
-                    # Hold here until the consumer has actually taken this frame.
-                    # Cleared only on success: a failed read produced nothing, so
-                    # the consumer owes no acknowledgement and we must not block.
-                    if self.sequential:
-                        self._taken.clear()
-                else:
-                    # ``ret`` must track the CURRENT health of the capture, not
-                    # "did we ever succeed".  Leaving it latched True made the
-                    # whole reconnect ladder in run_camera() unreachable.
-                    with self.lock:
-                        self.ret = False
-                    time.sleep(0.01)
-        finally:
-            # The reader thread owns teardown, so a release() that races with an
-            # in-flight read() can never free the capture out from under us.
-            self._close_cap()
-
-    def read(self) -> tuple[bool, np.ndarray | None]:
-        """cv2-compatible read.  Returns the latest frame, fresh or not."""
-        ret, frame, _is_new = self.read_with_freshness()
-        return ret, frame
-
-    def read_with_freshness(self) -> tuple[bool, np.ndarray | None, bool]:
-        """
-        Like :meth:`read` but also reports whether the frame is *new*.
-
-        ``is_new`` is False when the reader thread has not decoded anything
-        since the previous call — re-running the tracker on such a frame would
-        feed ByteTrack a duplicate observation and corrupt its Kalman motion
-        model.
-        """
-        with self.lock:
-            if self.latest_frame is None:
-                return False, None, False
-            is_new = self.frame_seq != self._last_read_seq
-            self._last_read_seq = self.frame_seq
-            # A single failed cap.read() between two good ones is normal (packet
-            # loss, decoder warm-up).  Only sustained silence counts as a
-            # failure, so a blip does not trip the reconnect ladder.
-            ret = self.ret or self._health_locked() == self.OK
-            frame = self.latest_frame.copy()
-
-        # Acknowledge OUTSIDE the lock: this releases the reader thread to decode
-        # the next frame, and the reader takes self.lock to store it.  Signalling
-        # while holding the lock would hand it a thread that immediately blocks.
-        if is_new and self.sequential:
-            self._taken.set()
-
-        return ret, frame, is_new
-
-    # -- liveness ----------------------------------------------------------
-
-    def _health_locked(self) -> str:
-        """``self.lock`` must be held.  See :meth:`health`."""
-        now = time.monotonic()
-        if self.last_frame_ts is None:
-            # Nothing has ever been decoded.  Be patient until the grace window
-            # expires -- tearing the capture down here is what caused a
-            # slow-to-start camera to loop forever without ever streaming.
-            if (now - self.opened_at) < self.first_frame_timeout:
-                return self.CONNECTING
-            return self.STALLED
-        if (now - self.last_frame_ts) >= self.stall_timeout:
-            return self.STALLED
-        return self.OK
-
-    def health(self) -> str:
-        """
-        Current liveness of the capture: ``CONNECTING`` / ``OK`` / ``STALLED``.
-
-        This is what distinguishes "no frame yet, still negotiating" (wait) from
-        "frames were flowing and stopped" (reconnect).
-        """
-        with self.lock:
-            return self._health_locked()
-
-    def _close_cap(self) -> None:
-        """Idempotently release the underlying capture."""
-        with self.lock:
-            cap, self.cap = self.cap, None
-        if cap is not None:
-            try:
-                cap.release()
-            except Exception:
-                pass
-
-    def release(self) -> None:
-        self.running = False
-        thread = self.thread
-        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
-            thread.join(timeout=5.0)
-            if thread.is_alive():
-                logger.warning(
-                    "[%s] Thread join timed out after 5.0s during release — forcing capture handle teardown",
-                    getattr(self, "source_parsed", "unknown"),
-                )
-        self._close_cap()
+ThreadedRTSPCapture = GStreamerCapture
 
 
 def _capture_health(cap: Any) -> str:
@@ -708,64 +474,46 @@ async def run_camera(
         logger.error("[%s] Camera pipeline startup / model load exceeded 15s — likely blocking call", camera_id)
         return
 
+    if not GST_AVAILABLE:
+        raise RuntimeError(
+            f"[{camera_id}] Native GStreamer PyGObject bindings (gi.repository.Gst) are required for RTSP streaming.\n"
+            "Please ensure system packages are installed:\n"
+            "  sudo apt-get update && sudo apt-get install -y python3-gi gir1.2-gstreamer-1.0 "
+            "gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav"
+        )
+
     async with httpx.AsyncClient() as http_client:
-        cap = None
-        using_native_gst = False
+        logger.info("[%s] Initializing Native GStreamer PyGObject capture pipeline (%s)...", camera_id, gst_version_string())
+        gst_cap = GStreamerCapture(source_parsed, sequential=is_file_source)
+        started = await loop.run_in_executor(None, gst_cap.start)
+        if started:
+            cap = gst_cap
+            logger.info("[%s] Native GStreamer pipeline active and operational.", camera_id)
+        else:
+            logger.warning("[%s] Native GStreamer pipeline failed to reach PLAYING. Initiating fault-tolerant reconnect loop...", camera_id)
+            cap = gst_cap
 
-        if GST_AVAILABLE and isinstance(source_parsed, str):
-            logger.info(
-                "[%s] Attempting NATIVE GStreamer capture (%s)",
-                camera_id, gst_version_string(),
-            )
-            gst_cap = GStreamerCapture(source_parsed)
-            started = await loop.run_in_executor(None, gst_cap.start)
-            if started:
-                cap = gst_cap
-                using_native_gst = True
-                logger.info(
-                    "[%s] Using NATIVE GStreamer capture -- pipeline active",
-                    camera_id,
-                )
-            else:
+        retry_count = 0
+        while not cap.isOpened() and not single_pass:
+            retry_count += 1
+            if retry_count <= 3 or retry_count % 10 == 0:
                 logger.warning(
-                    "[%s] Native GStreamer pipeline failed to reach PLAYING. "
-                    "Falling back to FFMPEG capture.",
-                    camera_id,
+                    "[%s] Cannot open live camera '%s' (attempt %d). Retrying in 2.0 s...",
+                    camera_id, source, retry_count,
                 )
-                gst_cap.release()
-        elif not GST_AVAILABLE:
-            logger.info(
-                "[%s] GStreamer unavailable, falling back to FFMPEG capture",
-                camera_id,
-            )
+            await asyncio.sleep(2.0)
+            await loop.run_in_executor(None, cap.release)
+            gst_cap = GStreamerCapture(source_parsed, sequential=is_file_source)
+            started = await loop.run_in_executor(None, gst_cap.start)
+            cap = gst_cap
 
-        if cap is None or not cap.isOpened():
-            # FFMPEG / OpenCV fallback with dedicated background frame reader thread
-            logger.info("[%s] Opening source using Threaded RTSP Capture...", camera_id)
-            cap = await loop.run_in_executor(
-                None, lambda: ThreadedRTSPCapture(source_parsed, sequential=is_file_source)
+        if not cap.isOpened() and single_pass:
+            logger.error(
+                "[%s] Cannot open uploaded video source '%s'. Task exiting.",
+                camera_id, source,
             )
-            retry_count = 0
-            while not cap.isOpened() and not single_pass:
-                retry_count += 1
-                if retry_count <= 3 or retry_count % 10 == 0:
-                    logger.warning(
-                        "[%s] Cannot open live camera '%s' (attempt %d). Retrying in 2.0 s...",
-                        camera_id, source, retry_count,
-                    )
-                await asyncio.sleep(2.0)
-                await loop.run_in_executor(None, cap.release)
-                cap = await loop.run_in_executor(
-                    None, lambda: ThreadedRTSPCapture(source_parsed, sequential=is_file_source)
-                )
-
-            if not cap.isOpened() and single_pass:
-                logger.error(
-                    "[%s] Cannot open uploaded video source '%s'. Task exiting.",
-                    camera_id, source,
-                )
-                await _report_video_complete(http_client, camera_id, "failed")
-                return
+            await _report_video_complete(http_client, camera_id, "failed")
+            return
 
         # Inspect stream codec off the main thread
         try:
