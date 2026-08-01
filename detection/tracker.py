@@ -801,23 +801,96 @@ async def run_camera(
         target_fps = float(os.getenv("VCC_TARGET_FPS", "15.0"))
         target_delay = 1.0 / target_fps if target_fps > 0 else 0
 
-        # Per-track temporal color & confidence tracking memory
-        # t_id -> dict(color=str, last_frame=int, frame_counter=int, best_conf=float, best_crop_info=tuple)
+        # Shared state for non-blocking decoupled display & inference backlog guard
+        latest_tracks: list[Any] = []
+        infer_in_flight: bool = False
         track_color_state: dict[int, dict[str, Any]] = {}
 
-        # Telemetry: FPS tracking
-        fps_frame_count = 0
-        fps_start_time = time.monotonic()
+        async def _run_async_infer(frame_to_infer: np.ndarray, o_h: int, o_w: int):
+            nonlocal infer_in_flight, latest_tracks
+            try:
+                infer_sz = config.INFER_IMGSZ
+                if o_h != infer_sz or o_w != infer_sz:
+                    infer_frame = cv2.resize(frame_to_infer, (infer_sz, infer_sz), interpolation=cv2.INTER_LINEAR)
+                    scale_x = o_w / float(infer_sz)
+                    scale_y = o_h / float(infer_sz)
+                else:
+                    infer_frame = frame_to_infer
+                    scale_x = 1.0
+                    scale_y = 1.0
 
-        # Reconnect backoff: 1 s doubling to RECONNECT_MAX_BACKOFF.  A camera
-        # that is permanently dead must not spin at 1 Hz forever, nor flood the
-        # log with one warning per attempt.
-        RECONNECT_BASE_BACKOFF = 1.0
-        RECONNECT_MAX_BACKOFF  = 30.0
-        backoff          = RECONNECT_BASE_BACKOFF
-        connecting_logged = False
-        connecting_start_time: float | None = None
-        reconnect_timestamps: list[float] = []
+                loop_cur = asyncio.get_running_loop()
+                results = await loop_cur.run_in_executor(
+                    INFER_EXECUTOR,
+                    lambda f=infer_frame: model.track(
+                        f,
+                        persist    = True,
+                        tracker    = config.TRACKER,
+                        conf       = config.CONF_THRESHOLD,
+                        iou        = config.IOU_THRESHOLD,
+                        classes    = list(config.VEHICLE_CLASS_MAP.keys()),
+                        verbose    = False,
+                        imgsz      = infer_sz,
+                    ),
+                )
+
+                new_tracks: list[Any] = []
+                if results and results[0].boxes is not None:
+                    boxes = results[0].boxes
+                    for i in range(len(boxes)):
+                        cls_raw = boxes.cls[i]
+                        cls_id = int(cls_raw.item() if hasattr(cls_raw, "item") else cls_raw)
+                        cls_name = config.VEHICLE_CLASS_MAP.get(cls_id, "car")
+
+                        conf_raw = boxes.conf[i]
+                        conf_val = float(conf_raw.item() if hasattr(conf_raw, "item") else conf_raw)
+                        min_conf = config.CLASS_CONF_THRESHOLDS.get(cls_name, 0.35)
+                        if conf_val < min_conf:
+                            continue
+
+                        box_slice = boxes.xyxy[i]
+                        b_scaled = (
+                            float(box_slice[0]) * scale_x,
+                            float(box_slice[1]) * scale_y,
+                            float(box_slice[2]) * scale_x,
+                            float(box_slice[3]) * scale_y,
+                        )
+
+                        t_id = int(boxes.id[i]) if (boxes.id is not None and i < len(boxes.id)) else None
+                        v_color = "Unknown"
+
+                        if t_id is not None:
+                            st = track_color_state.setdefault(t_id, {
+                                "color": "Unknown",
+                                "frames_since_detect": config.COLOR_DETECT_INTERVAL,
+                                "best_conf": 0.0,
+                                "best_bbox": None,
+                            })
+                            st["frames_since_detect"] += 1
+                            if conf_val > st["best_conf"]:
+                                st["best_conf"] = conf_val
+                                st["best_bbox"] = b_scaled
+
+                            if st["frames_since_detect"] >= config.COLOR_DETECT_INTERVAL:
+                                target_bbox = st["best_bbox"] if st["best_bbox"] is not None else b_scaled
+                                st["color"] = detect_vehicle_color(frame_to_infer, target_bbox)
+                                st["frames_since_detect"] = 0
+                                st["best_conf"] = 0.0
+                                st["best_bbox"] = None
+                            v_color = st["color"]
+                        else:
+                            v_color = detect_vehicle_color(frame_to_infer, b_scaled)
+
+                        new_tracks.append(_BoxWrapper(boxes, i, color=v_color, scaled_xyxy=b_scaled))
+
+                latest_tracks = new_tracks
+                events = counter.process_tracks(new_tracks, o_h, frame_w=o_w)
+                for ev in events:
+                    asyncio.create_task(_post_event(http_client, ev, camera_config))
+            except Exception as e:
+                logger.error("[%s] Error in background inference worker: %s", camera_id, e)
+            finally:
+                infer_in_flight = False
 
         try:
             while True:
@@ -827,8 +900,6 @@ async def run_camera(
                 if reader is not None:
                     ret, frame, is_new = await loop.run_in_executor(None, reader)
                 else:
-                    # GStreamerCapture.read() blocks on its own frame queue, so
-                    # every successful read is new by construction.
                     ret, frame = await loop.run_in_executor(None, cap.read)
                     is_new = ret
 
@@ -880,12 +951,9 @@ async def run_camera(
 
                     fail_streak += 1
                     if fail_streak < 30 and cap.isOpened():
-                        # Minor transient frame miss -- retry without tearing down the RTSP connection
                         await asyncio.sleep(0.01)
                         continue
 
-                    # Stream is genuinely stalled -- reconnect
-                    # Circuit breaker check: log warning if reconnects in last 1 hour exceed 15
                     now_mono = time.monotonic()
                     reconnect_timestamps = [t for t in reconnect_timestamps if now_mono - t < 3600]
                     reconnect_timestamps.append(now_mono)
@@ -935,118 +1003,29 @@ async def run_camera(
 
                 orig_h, orig_w = frame.shape[:2]
 
-                # Cache unannotated raw frame for clean training snapshots
                 try:
                     import streamer
                     streamer.update_raw_frame(camera_id, frame)
                 except Exception:
                     pass
 
-                # ---- 1. Downscale frame for fast inference -----------------
-                infer_sz = config.INFER_IMGSZ
-                if orig_h != infer_sz or orig_w != infer_sz:
-                    infer_frame = cv2.resize(frame, (infer_sz, infer_sz), interpolation=cv2.INTER_LINEAR)
-                    scale_x = orig_w / float(infer_sz)
-                    scale_y = orig_h / float(infer_sz)
-                else:
-                    infer_frame = frame
-                    scale_x = 1.0
-                    scale_y = 1.0
+                # Dispatch non-blocking background inference if no job is currently in flight
+                if not infer_in_flight:
+                    infer_in_flight = True
+                    asyncio.create_task(_run_async_infer(frame, orig_h, orig_w))
 
-                # ---- 2. Run tracker in dedicated INFER_EXECUTOR -----------
-                loop = asyncio.get_running_loop()
-                results = await loop.run_in_executor(
-                    INFER_EXECUTOR,
-                    lambda f=infer_frame: model.track(
-                        f,
-                        persist    = True,
-                        tracker    = config.TRACKER,
-                        conf       = config.CONF_THRESHOLD,
-                        iou        = config.IOU_THRESHOLD,
-                        classes    = list(config.VEHICLE_CLASS_MAP.keys()),
-                        verbose    = False,
-                        imgsz      = infer_sz,
-                    ),
-                )
-
-                # ---- 3. Collect tracks, apply per-class conf filter & smart color detection ----
-                tracks: list[Any] = []
-                if results and results[0].boxes is not None:
-                    boxes = results[0].boxes
-                    for i in range(len(boxes)):
-                        cls_raw = boxes.cls[i]
-                        cls_id = int(cls_raw.item() if hasattr(cls_raw, "item") else cls_raw)
-                        cls_name = config.VEHICLE_CLASS_MAP.get(cls_id, "car")
-
-                        # Per-class confidence check (post-inference precision filter)
-                        conf_raw = boxes.conf[i]
-                        conf_val = float(conf_raw.item() if hasattr(conf_raw, "item") else conf_raw)
-                        min_conf = config.CLASS_CONF_THRESHOLDS.get(cls_name, 0.35)
-                        if conf_val < min_conf:
-                            continue  # Filter out weak detections for this specific class
-
-                        # Rescale box coordinates back to ORIGINAL frame resolution
-                        box_slice = boxes.xyxy[i]
-                        b_scaled = (
-                            float(box_slice[0]) * scale_x,
-                            float(box_slice[1]) * scale_y,
-                            float(box_slice[2]) * scale_x,
-                            float(box_slice[3]) * scale_y,
-                        )
-
-                        # Smart color detection debouncing (highest-conf frame sampling)
-                        t_id = int(boxes.id[i]) if (boxes.id is not None and i < len(boxes.id)) else None
-                        v_color = "Unknown"
-
-                        if t_id is not None:
-                            st = track_color_state.setdefault(t_id, {
-                                "color": "Unknown",
-                                "frames_since_detect": config.COLOR_DETECT_INTERVAL,
-                                "best_conf": 0.0,
-                                "best_bbox": None,
-                            })
-                            st["frames_since_detect"] += 1
-
-                            # Update best sample candidate in the current window
-                            if conf_val > st["best_conf"]:
-                                st["best_conf"] = conf_val
-                                st["best_bbox"] = b_scaled
-
-                            # Re-run color detection at the end of interval using the highest-conf view
-                            if st["frames_since_detect"] >= config.COLOR_DETECT_INTERVAL:
-                                target_bbox = st["best_bbox"] if st["best_bbox"] is not None else b_scaled
-                                st["color"] = detect_vehicle_color(frame, target_bbox)
-                                st["frames_since_detect"] = 0
-                                st["best_conf"] = 0.0
-                                st["best_bbox"] = None
-
-                            v_color = st["color"]
-                        else:
-                            v_color = detect_vehicle_color(frame, b_scaled)
-
-                        tracks.append(_BoxWrapper(boxes, i, color=v_color, scaled_xyxy=b_scaled))
-
-                # ---- 4. Count crossings at full original resolution -----
-                events = counter.process_tracks(tracks, orig_h, frame_w=orig_w)
-
-                # ---- 5. Post events to backend ---------------------------
-                for ev in events:
-                    asyncio.ensure_future(
-                        _post_event(http_client, ev, camera_config)
-                    )
-
-                # ---- 6. Annotate original frame --------------------------
+                # ---- Immediate Non-Blocking Display Pushing (Native Capture FPS) ----
                 annotated = frame.copy()
                 _draw_lines(annotated, counter)
                 _draw_counters(annotated, counter)
 
-                for t in tracks:
+                for t in list(latest_tracks):
                     try:
                         tid_raw = t.id
                         if tid_raw is None:
                             continue
                         tid     = int(tid_raw.item() if hasattr(tid_raw, "item") else tid_raw)
-                        box     = t.xyxy  # Returns rescaled coordinates
+                        box     = t.xyxy
                         cls_raw = t.cls
                         cls_id  = int(cls_raw.item() if hasattr(cls_raw, "item") else cls_raw)
                         label   = config.VEHICLE_CLASS_MAP.get(cls_id, "vehicle")
@@ -1062,7 +1041,6 @@ async def run_camera(
                     except Exception:
                         pass
 
-                # ---- 7. Push annotated frame to queue --------------------
                 q = frame_queues.get(camera_id)
                 if q is not None:
                     if q.full():
@@ -1075,7 +1053,6 @@ async def run_camera(
                     except asyncio.QueueFull:
                         pass
 
-                # Telemetry: Measure and log processed FPS every 30 seconds
                 fps_frame_count += 1
                 now_ts = time.monotonic()
                 if (now_ts - fps_start_time) >= 30.0:
