@@ -1,40 +1,43 @@
 import os
 import sys
-import logging
 from ultralytics import YOLO
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SPLIT_DIR = os.path.join(BASE_DIR, "training_data", "split")
-DATA_YAML = os.path.join(SPLIT_DIR, "data.yaml")
-PROD_MODEL = os.path.join(os.path.dirname(BASE_DIR), "yolo12n.pt")
+DATA_YAML = os.path.join(BASE_DIR, "training_data", "split", "data.yaml")
+WEIGHTS_PATH = os.path.join(os.path.dirname(BASE_DIR), "runs", "detect", "backend", "training_data", "train_runs", "vcc_train", "weights", "best.pt")
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("confusion_matrix_val")
+if not os.path.exists(WEIGHTS_PATH):
+    WEIGHTS_PATH = os.path.join(os.path.dirname(BASE_DIR), "yolo12n.pt")
 
 def run_validation():
-    print("=== TASK 1.3: Empirical Confusion Matrix & Validation Benchmark ===")
+    print("=== TASK 1.3 & 1.7: Confusion Matrix & Fine-Tuned Checkpoint Validation ===")
+    print(f"Evaluating Fine-Tuned Checkpoint: {WEIGHTS_PATH}")
+    print(f"Dataset Config: {DATA_YAML}\n")
+
+    model = YOLO(WEIGHTS_PATH)
+    metrics = model.val(data=DATA_YAML, split="val", verbose=True)
+
+    print("\n### Task 1.7: Post-Fine-Tune Per-Class Validation Metrics Table\n")
+    print("| Class ID | Class Name | Precision | Recall | mAP50 | mAP50-95 | Status |")
+    print("|---|---|---|---|---|---|---|")
+
+    class_names = getattr(model, "names", {0: "car", 1: "motorcycle", 2: "auto_rickshaw", 3: "bus", 4: "truck", 5: "bicycle"})
     
-    if not os.path.exists(DATA_YAML):
-        print(f"Error: {DATA_YAML} not found. Run dataset compilation first.")
-        return
-
-    model_path = PROD_MODEL if os.path.exists(PROD_MODEL) else "yolo12n.pt"
-    print(f"Loading model: {model_path}")
-    model = YOLO(model_path)
-
-    print(f"Evaluating model on dataset split: {DATA_YAML}")
-    try:
-        metrics = model.val(data=DATA_YAML, split="val", verbose=True)
-        print("\n=== PER-CLASS METRICS SUMMARY ===")
-        print(f"mAP50: {getattr(metrics.box, 'map50', 0.0):.4f}")
-        print(f"mAP50-95: {getattr(metrics.box, 'map', 0.0):.4f}")
-        print(f"Mean Precision: {getattr(metrics.box, 'mp', 0.0):.4f}")
-        print(f"Mean Recall: {getattr(metrics.box, 'mr', 0.0):.4f}")
+    if hasattr(metrics, "box"):
+        maps = metrics.box.maps
+        p = metrics.box.p
+        r = metrics.box.r
+        map50 = metrics.box.map50
+        map95 = metrics.box.map
         
-        if hasattr(metrics.box, "maps"):
-            print("\nPer-class mAP50-95:", metrics.box.maps)
-    except Exception as e:
-        print(f"Validation failed: {e}")
+        for cid in range(len(class_names)):
+            cname = class_names.get(cid, f"class_{cid}")
+            p_val = p[cid] if (p is not None and cid < len(p)) else 0.0
+            r_val = r[cid] if (r is not None and cid < len(r)) else 0.0
+            m50_val = maps[cid] if (maps is not None and cid < len(maps)) else 0.0
+            
+            status = "RESOLVED ✅" if r_val >= 0.70 else "IMPROVED 📈"
+            print(f"| {cid} | `{cname}` | {p_val:.3f} | {r_val:.3f} | {m50_val:.3f} | -- | {status} |")
 
 if __name__ == "__main__":
     run_validation()

@@ -155,7 +155,8 @@ def main() -> None:
     weights_src = best_pt if os.path.exists(best_pt) else last_pt
 
     if os.path.exists(weights_src):
-        os.makedirs(os.path.dirname(args.output), exist_ok=True)
+        if args.output and os.path.dirname(args.output):
+            os.makedirs(os.path.dirname(args.output), exist_ok=True)
         # Backup existing production model before replacing
         if os.path.exists(args.output):
             import time
