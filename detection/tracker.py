@@ -798,6 +798,15 @@ async def run_camera(
             finally:
                 infer_in_flight = False
 
+        connecting_start_time: float | None = None
+        connecting_logged = False
+        fail_streak = 0
+        backoff = RECONNECT_BASE_BACKOFF
+        reconnect_timestamps: list[float] = []
+        fps_frame_count = 0
+        fps_start_time = time.monotonic()
+        using_native_gst = GST_AVAILABLE and isinstance(source_parsed, str)
+
         try:
             while True:
                 start_time = asyncio.get_event_loop().time()
@@ -984,6 +993,10 @@ async def run_camera(
                     await asyncio.sleep(0.005)
 
 
+        except asyncio.CancelledError:
+            logger.info("[%s] Camera task cancelled.", camera_id)
+        except Exception as exc:
+            logger.error("[%s] UNHANDLED EXCEPTION in inference loop: %s", camera_id, exc, exc_info=True)
         finally:
             # Non-blocking: release() joins the reader thread for up to 5 s and
             # this runs on the event loop during task cancellation.
